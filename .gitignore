@@ -1,0 +1,30 @@
+.env
+
+# macOS rubbish
+.DS_Store
+
+# logs
+*.log
+.cache
+*bak*
+
+# Virtual environments
+.venv
+
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+build/
+
+
+nohup.out
+# Elastic Beanstalk Files
+.elasticbeanstalk/*
+!.elasticbeanstalk/*.cfg.yml
+!.elasticbeanstalk/*.global.yml
+
+data/

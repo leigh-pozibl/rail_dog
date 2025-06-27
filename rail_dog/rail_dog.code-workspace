@@ -1,0 +1,11 @@
+{
+	"folders": [
+		{
+			"path": ".."
+		},
+		{
+			"path": "../../snappy_tools/snappy_utils"
+		}
+	],
+	"settings": {}
+}

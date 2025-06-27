@@ -1,0 +1,69 @@
+{
+    "base_data": {
+        "ug_path": "base_data/railway_lines_fmg.geojson",
+        # "ug_lateral_points": "base_data/access_points.shp",
+        # "parcels": "base_data/parcels.shp"
+    },
+
+    "controls": {
+    },
+
+    "parameters": {
+        "globals": {
+            "working_crs": "utm",
+            "output_fmt": "fgb"
+        },
+        "input_fields": {
+            "parcels": {
+                "ID": "APN9",
+                "ADDRESS": "ADDRESS",
+                "DEMAND": "DEMAND",
+            },
+            "ug_path": {
+                "ID": "id"
+            },
+            "ug_points": {
+                "ID": "id"
+            },
+            "oh_path": {
+                "ID": "id"
+            },
+            "oh_points": {
+                "ID": "POLE_NO"
+            }
+        },
+        "preprocess": {
+            "gap_tolerance": 1,
+            "extend_tolerance": 1,
+            "split_lines": false,
+            "tag_filters": {
+                "nodes": {
+                    "CANDIDATE_ACCESS": "access,pole",
+                    "DEMAND": "demand",
+                    "ACCESS": "access-pt"
+                },
+                "edges": {
+                    "LEADIN": "ug-leadin"
+                }
+            },
+            "segment_ug_path_length": 100,
+        },
+        "costs": {
+            "nodes": {
+                "default": 1.0,
+            },
+            "edges": {
+                "default": 1.0,
+                "crossing": 10.0,
+            }
+        },
+    },
+
+    "execution": {
+        # "base_graph": "process/base_graph.nx.json",
+        # "solution_graph": "process/demand_graph.nx.json",
+        # "solution_graph": "solution/ug_dist/solution_graph.nx.json",
+        # "run_steps": ["pp", "ug_feeder"],
+        "run_steps": ["pp"]
+    }
+}
