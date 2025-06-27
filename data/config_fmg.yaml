@@ -1,0 +1,84 @@
+{
+    "base_data": {
+        "path": "base_data/Data In/fmg_railway_design_centreline_20250504.geojson",
+        "points": "base_data/Data In/switches.geojson",
+        # "excel_files": {
+        #   "base_data/Data In/Master - Work Plan - Backup 2025 05 09.xlsx": {
+        #     "Master Data - Thomas": "TLX",
+        #     "Master Data - Mainline": "MLX",
+        #     "Master Data - Solomon ML": "SML",
+        #     "Master Data - Eliwana ML": "EML",
+        #     "Curves and Tangents": "CURVE_SECTIONS",
+        #   }
+        # },
+        "csv_files": [
+            "base_data/Data In/TLX.csv",
+            "base_data/Data In/MLX.csv",
+            "base_data/Data In/SML.csv",
+            "base_data/Data In/EML.csv",
+            "base_data/Data In/CURVE_SECTIONS.csv",
+        ],
+        #"rp_raw_data": "base_data/ENSCO/Mar 2025/RP",
+        "ensco_db": "process/ensco_data_corrected.duckdb"
+        #"tg_raw_data": "base_data/ENSCO/Mar 2025/TG"
+    },
+
+    "controls": {
+    },
+
+    "parameters": {
+        "globals": {
+            "working_crs": "epsg:28350",
+            "output_fmt": "geojson",
+            "origin": [662669.066, 7746597.522]
+        },
+        "input_fields": {
+            "parcels": {
+                "ID": "APN9",
+                "ADDRESS": "ADDRESS",
+                "DEMAND": "DEMAND",
+            },
+            "ug_path": {
+                "ID": "id"
+            },
+            "ug_points": {
+                "ID": "id"
+            },
+            "oh_path": {
+                "ID": "id"
+            },
+            "oh_points": {
+                "ID": "POLE_NO"
+            }
+        },
+        "preprocess": {
+            "gap_tolerance": 1,
+            "extend_tolerance": 1,
+            "split_lines": false,
+            "tag_filters": {
+                "nodes": {
+                    "CANDIDATE_ACCESS": "access,pole",
+                    "DEMAND": "demand",
+                    "ACCESS": "access-pt"
+                },
+                "edges": {
+                    "LEADIN": "ug-leadin"
+                }
+            },
+            "segment_ug_path_length": 100,
+        },
+        "costs": {
+            "nodes": {
+                "default": 1.0,
+            },
+            "edges": {
+                "default": 1.0,
+                "crossing": 10.0,
+            }
+        },
+    },
+
+    "execution": {
+        "run_steps": ["pp"]
+    }
+}
