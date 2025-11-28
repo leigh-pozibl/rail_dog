@@ -1,0 +1,495 @@
+"""
+SQLModel schema for PostgreSQL database with PostGIS support.
+"""
+from datetime import datetime, timezone
+from typing import Any, Optional
+from uuid import UUID, uuid4
+
+import pandas as pd
+
+from sqlmodel import SQLModel, Field, Relationship, Column, Numeric
+from sqlalchemy import JSON
+from geoalchemy2 import Geometry
+
+
+EPSG = 28350  # GDA2020 / MGA zone 50
+
+# ==============================================================================
+# Database Models (SQLModel - combines SQLAlchemy + Pydantic)
+# ==============================================================================
+
+class Project(SQLModel, table=True):
+    """Project table - stores project metadata."""
+    __tablename__ = "projects"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    name: str = Field(max_length=255, index=True)
+    description: Optional[str] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: Optional[datetime] = Field(
+        default_factory=lambda: datetime.now(timezone.utc),
+        sa_column_kwargs={"onupdate": lambda: datetime.now(timezone.utc)}
+    )
+
+    # Relationships
+    # rail_segments: list["RailSegment"] = Relationship(back_populates="project")
+
+
+class RailSegmentAsset(SQLModel, table=True):
+    """Junction table linking rail segments to assets (many-to-many)."""
+    __tablename__ = "rail_segment_assets"
+
+    chainage_id: str = Field(foreign_key="rail_segments.chainage_id", primary_key=True, max_length=100)
+    asset_id: str = Field(foreign_key="assets.asset_id", primary_key=True, max_length=100)
+
+
+class RailSegment(SQLModel, table=True):
+    """Rail segment table - stores railway line segments."""
+    __tablename__ = "rail_segments"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    # project_id: UUID = Field(foreign_key="projects.id", index=True)
+
+    # Basic attributes
+    chainage_id: str = Field(max_length=100, unique=True, index=True)
+    line: str = Field(max_length=10)
+    line_code: str = Field(max_length=3)  # TLX, MLX, SML, EML
+    section: str = Field(max_length=100)
+    section_name: str = Field(max_length=100)
+    station: str = Field(max_length=100)
+    chainage_start_km: float
+    chainage_end_km: float
+    segment_length_m: float
+
+    # Coordinates
+    mid_coord_lng: float
+    mid_coord_lat: float
+
+    # Track classification
+    curve_type: Optional[str] = Field(default=None, max_length=50)  # tangent, mild_curve, sharp_curve
+
+    # Geometry - accepts shapely Point objects or WKT strings
+    geometry: Any = Field(sa_column=Column(Geometry("LINESTRING", srid=EPSG)))
+
+    # Metadata
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    # project: Project = Relationship(back_populates="rail_segments")
+    rail_profile_data: list["RailProfile"] = Relationship(back_populates="rail_segments")
+    # track_geometry_data: list["TrackGeometry"] = Relationship(back_populates="rail_segments")
+    assets: list["Asset"] = Relationship(back_populates="rail_segments", link_model=RailSegmentAsset)
+
+
+class RailSection(SQLModel, table=True):
+    """Rail section table - railway line sections correspond to curves and tangents"""
+    __tablename__ = "rail_sections"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    # project_id: UUID = Field(foreign_key="projects.id", index=True)
+
+    # Basic attributes
+    section_id: str = Field(max_length=100, unique=True, index=True)
+    line: str = Field(max_length=10)
+    line_code: str = Field(max_length=3)  # TLX, MLX, SML, EML
+    type: str = Field(max_length=10)  # tangent or curve
+    chainage_start_km: float
+    chainage_end_km: float
+    curve_length: float
+    classification: str = Field(max_length=50)  # tangent, sharp_curve, mild_curve
+    
+    # only populated for curve types
+    curve_id: Optional[str] = Field(default=None, max_length=10)
+    ts: Optional[float]
+    sc: Optional[float]
+    cs: Optional[float]
+    st: Optional[float]
+    radius: Optional[float]
+    hand: Optional[str] = Field(default=None, max_length=2)  # LH or RH
+    se_design: Optional[int]
+    gradient: Optional[float]
+    
+    # Track classification
+    curve_type: Optional[str] = Field(default=None, max_length=50)  # tangent, mild_curve, sharp_curve
+
+    # Geometry - accepts shapely Point objects or WKT strings
+    geometry: Any = Field(sa_column=Column(Geometry("LINESTRING", srid=EPSG)))
+
+    # Metadata
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+
+
+class RailProfile(SQLModel, table=True):
+    """Rail profile measurements from ENSCO RP data."""
+    __tablename__ = "rail_profile_data"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    rail_segment_id: UUID = Field(foreign_key="rail_segments.id", index=True)
+
+    # Section info
+    section_id: Optional[str] = Field(default=None, max_length=100)
+    rail_hand: Optional[str] = Field(default=None, max_length=10)  # LH, RH
+
+    # Measurements - West rail
+    W_vert_wear_avg: Optional[float] = None
+    W_vert_wear_max: Optional[float] = None
+    W_vert_wear_p50: Optional[float] = None
+    W_vert_wear_p75: Optional[float] = None
+    W_vert_wear_p90: Optional[float] = None
+
+    W_side_wear_avg: Optional[float] = None
+    W_side_wear_max: Optional[float] = None
+    W_side_wear_p50: Optional[float] = None
+    W_side_wear_p75: Optional[float] = None
+    W_side_wear_p90: Optional[float] = None
+
+    W_rel_head_loss_avg: Optional[float] = None
+    W_rel_head_loss_max: Optional[float] = None
+    W_rel_head_loss_p50: Optional[float] = None
+    W_rel_head_loss_p75: Optional[float] = None
+    W_rel_head_loss_p90: Optional[float] = None
+
+    # Measurements - East rail
+    E_vert_wear_avg: Optional[float] = None
+    E_vert_wear_max: Optional[float] = None
+    E_vert_wear_p50: Optional[float] = None
+    E_vert_wear_p75: Optional[float] = None
+    E_vert_wear_p90: Optional[float] = None
+
+    E_side_wear_avg: Optional[float] = None
+    E_side_wear_max: Optional[float] = None
+    E_side_wear_p50: Optional[float] = None
+    E_side_wear_p75: Optional[float] = None
+    E_side_wear_p90: Optional[float] = None
+
+    E_rel_head_loss_avg: Optional[float] = None
+    E_rel_head_loss_max: Optional[float] = None
+    E_rel_head_loss_p50: Optional[float] = None
+    E_rel_head_loss_p75: Optional[float] = None
+    E_rel_head_loss_p90: Optional[float] = None
+
+    # Status
+    status_level: Optional[str] = Field(default=None, max_length=10)  # G, A, R
+    status_string: Optional[str] = Field(default=None, max_length=50)  # GGG-GGG format
+
+    # Geometry
+    geometry: Optional[Any] = Field(
+        default=None,
+        sa_column=Column(Geometry("LINESTRING", srid=EPSG))
+    )
+
+    # Metadata
+    measurement_date: Optional[datetime] = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    rail_segments: RailSegment = Relationship(back_populates="rail_profile_data")
+
+
+class TGRecord(SQLModel, table=True):
+    """Track geometry measurements from ENSCO TG data."""
+    __tablename__ = "tg_records"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    
+    # Measurement info
+    chainage_km: float
+    speed: int
+    post_speed: int
+    trk_class: int
+    
+    top_e_5: float
+    top_e_10: float
+    top_e_20: float
+    
+    top_w_5: float
+    top_w_10: float
+    top_w_20: float
+    
+    align_e_5: float
+    align_e_10: float
+    align_e_20: float
+    
+    align_w_5: float
+    align_w_10: float
+    align_w_20: float
+    
+    gauge: float
+    crosslevel: float
+    crosslevel_rate: float
+    curve: float
+    curve_rate: float
+    
+    twist_2: float
+    twist_7: float
+    twist_14: float
+    warp: float
+    valid: float
+
+    # Geometry - accepts shapely Point objects or WKT strings
+    geometry: Any = Field(sa_column=Column(Geometry("POINT", srid=EPSG)))
+
+    # Metadata
+    collection_date: datetime = None
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    # rail_segments: RailSegment = Relationship(back_populates="track_geometry_data")
+
+
+class Asset(SQLModel, table=True):
+    """Railway assets (switches, signals, etc.)."""
+    __tablename__ = "assets"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    # project_id: UUID = Field(foreign_key="projects.id", index=True)
+
+    # Asset info
+    asset_id: str = Field(max_length=100, index=True, unique=True)
+    type: str = Field(max_length=100, index=True)
+    line: str = Field(max_length=10, index=True)
+    line_code: str = Field(max_length=3, index=True)
+    location_desc: str = Field(max_length=100)
+    chainage: float = Field(sa_column=Column(Numeric(precision=6, scale=3)))  # 6 total digits, 3 after decimal
+
+    # Location
+    coord_lng: Optional[float] = None
+    coord_lat: Optional[float] = None
+
+    # Geometry - accepts shapely Point objects or WKT strings
+    geometry: Any = Field(sa_column=Column(Geometry("POINT", srid=EPSG)))
+
+    # SAP aggregate data
+    sap_total_count: int = Field(default=0)
+    sap_year_count: Optional[dict] = Field(default=None, sa_column=Column(JSON))   # {"2023": 5, "2024": 12}
+    sap_year_status: Optional[dict] = Field(default=None, sa_column=Column(JSON))  # {"2023": "h", "2024": "vh"}
+    sap_max_threshold: Optional[str] = Field(default="", max_length=10)            # "h" or "vh"
+
+    # Metadata
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    # Relationships
+    rail_segments: list["RailSegment"] = Relationship(back_populates="assets", link_model=RailSegmentAsset)
+
+
+class AggAsset(SQLModel, table=True):
+    """Railway asset counts aggregated to chainage segments."""
+    __tablename__ = "agg_assets"
+    
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    # Aggregated Asset info
+    chainage_id: str = Field(max_length=100, index=True)
+    level_crossing: int = Field(default=0)
+    irj: int = Field(default=0)
+    turnout: int = Field(default=0)
+    bridge: int = Field(default=0)
+    fixed_asset: bool
+    wz_level_crossing: int = Field(default=0)
+    wz_irj: int = Field(default=0)
+    wz_turnout: int = Field(default=0)
+    wz_bridge: int = Field(default=0)
+    wz_asset: bool
+    
+    # Metadata
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class SAPRecord(SQLModel, table=True):
+    """SAP work order records."""
+    __tablename__ = "sap_records"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    # project_id: UUID = Field(foreign_key="projects.id", index=True)
+
+    # sap info
+    date: datetime = Field(index=True)
+    year: int = Field(index=True)
+    revision: str = Field(max_length=10, index=True)
+    planner_grp: str = Field(max_length=10)
+    work_center: str = Field(max_length=10)
+    user_status: str = Field(max_length=100)
+    system_status: str = Field(max_length=100)
+    priority: str = Field(max_length=10)
+    order_id: str = Field(max_length=10, index=True)
+    description: str = Field(max_length=254)
+    asset_id: str = Field(max_length=100, index=True)
+    iridium_code: str = Field(max_length=20)
+
+    # Location
+    # coord_lng: Optional[float] = None
+    # coord_lat: Optional[float] = None
+
+    # Geometry - accepts shapely Point objects or WKT strings
+    # geometry: Any = Field(sa_column=Column(Geometry("POINT", srid=EPSG)))
+
+    # Metadata
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    
+    # Relationships
+    # asset: Asset = Relationship(back_populates="asset")
+
+
+class GBFIRecord(SQLModel, table=True):
+    """Ground Penetrating Radar records."""
+    __tablename__ = "gbfi_records"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    
+    # gbfi info
+    collection_date: datetime = Field(index=True)
+    chainage_start_km: float = Field(index=True)
+    chainage_end_km: float = Field(index=True)
+    # left: float
+    # center: float
+    # right: float
+    avg: float
+    min: float
+    max: float
+    
+    # Location
+    line_code: str = Field(max_length=3, index=True)
+    # coord_lng: Optional[float] = None
+    # coord_lat: Optional[float] = None
+
+    # Geometry - accepts shapely Point objects or WKT strings
+    geometry: Any = Field(sa_column=Column(Geometry("POINT", srid=EPSG)))
+    
+    # Metadata
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+def gbfi_column_mapping() -> dict:
+    return {
+        "From(km+m)": "start_chainage_km",
+        "To(km+m)": "end_chainage_km",
+        "Long_0": "lng",
+        "Lat_0": "lat",
+        "GBFI_Left2": "left",
+        "GBFI_Center3": "center",
+        "GBFI_Right4": "right",
+    }
+
+  
+def extract_collection_date_from_header(gbfi_header: pd.DataFrame):
+    # Extract collection date from header
+    if len(gbfi_header) >= 4:
+        data_collected_text = str(gbfi_header.iloc[3, 0])
+        if "Data Collected:" in data_collected_text:
+            collection_date_str = data_collected_text.split("Data Collected:")[1].strip()
+            collection_date = pd.to_datetime(collection_date_str, format="%B %Y")
+        else:
+            collection_date = None
+    else:
+        collection_date = None
+    return collection_date
+        
+
+class AggGBFI(SQLModel, table=True):
+    """GBFI records aggregated to chainage segments."""
+    __tablename__ = "agg_gbfi"
+    
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    # Aggregated GBFI info
+    chainage_id: str = Field(max_length=100, index=True)
+    collection_date: datetime = Field(index=True)
+    max_of_avg: float
+    avg_of_avg: float
+    reasonably_fouled: int
+    fouled: int
+    highly_fouled: int
+    fouled_zone: bool
+    ballast_centre: Optional[float]
+    ballast_lt_250mm: Optional[bool]
+    
+    # Metadata
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class TSRRecord(SQLModel, table=True):
+    """Temporary speed restriction records."""
+    __tablename__ = "tsr_records"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    
+    # gbfi info
+    report_date: datetime = Field(index=True)
+    line_code: str = Field(max_length=3, index=True)
+    status: str = Field(max_length=10, index=True)
+    chainage_start_km: float = Field(index=True)
+    chainage_end_km: float = Field(index=True)
+    speed: float
+    close_date: Optional[datetime] = None
+    
+    # Metadata
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class AggTSR(SQLModel, table=True):
+    """TSR records aggregated to chainage segments."""
+    __tablename__ = "agg_tsr"
+    
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    # Aggregated TSR info
+    chainage_id: str = Field(max_length=100, index=True)
+    open_tsr: bool
+    open_tsr_days: int
+    complete_tsr: bool
+    cnt_2022: int
+    cnt_2023: int
+    cnt_2024: int
+    cnt_2025: int
+    cnt_2026: int
+    
+    # Metadata
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    
+
+class TQIRecord(SQLModel, table=True):
+    """Track Quality Indicator records."""
+    __tablename__ = "tqi_records"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    
+    # tqi info
+    line: str = Field(max_length=10, index=True)
+    line_code: str = Field(max_length=3, index=True)
+    line_section: str = Field(max_length=20)
+    status: str = Field(max_length=10, index=True)
+    chainage_start_km: float = Field(index=True)
+    chainage_end_km: float = Field(index=True)
+    tqi: float
+    run_id: str
+    section_name: str
+    
+    # Metadata
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+    
+# ==============================================================================
+# Helper Functions
+# ==============================================================================
+
+def create_tables(engine):
+    """Create all tables in the database."""
+    SQLModel.metadata.create_all(bind=engine)
+
+
+def create_table(engine, model_class):
+    """
+    Create a single table in the database.
+
+    Args:
+        engine: SQLAlchemy engine
+        model_class: SQLModel class (e.g., Asset, RailSegment, etc.)
+    """
+    model_class.metadata.create_all(bind=engine, tables=[model_class.__table__])
+
+
+def drop_tables(engine):
+    """Drop all tables from the database."""
+    SQLModel.metadata.drop_all(bind=engine)

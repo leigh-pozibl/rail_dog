@@ -24,6 +24,16 @@ default_input_fields = {
     }
 }
 
+default_actions = {
+    "BASE_SEGMENTS": "use_db",
+    "ASSETS": "use_db",
+    "SAP": "use_db",
+    "AGG_ASSETS": "use_db",
+    "CURVE_SECTIONS": "refresh",
+    "GBFI": "refresh",
+    "TSR": "refresh",
+}
+
 # use these to specify filters to apply to nodes and edges a graph, based on their tags.
 # note: the keys are defined terms used in the code, so shouldn't be changed
 default_tag_filters = {

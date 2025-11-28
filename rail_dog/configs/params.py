@@ -1,5 +1,6 @@
 import logging
 from typing import Dict
+from datetime import datetime
 
 from pandas import DataFrame
 from geopandas.geodataframe import GeoDataFrame
@@ -13,6 +14,8 @@ from snappy_utils.params import DBData
 
 @dataclass
 class BaseData:
+    __pydantic_config__ = {"arbitrary_types_allowed": True}
+
     path: str | List[str] | DBData = None
     points: str | List[str] = None
 
@@ -21,22 +24,29 @@ class BaseData:
     excel_files: Dict = None  # data is read and packed into track_data as a dict of DataFrames
     csv_files: List = None  # data is read and packed into track_data as a dict of DataFrames
     track_data: Dict = field(default_factory=lambda: {})
-    
+
     rp_raw_data: str = None # point to a folder containing raw RP data
     tg_raw_data: str = None # point to a folder containing raw TP data
 
-    rp_raw: str = None
-    tg_raw: str = None
+    rp_data: Optional[GeoDataFrame] = None
+    tg_data: Optional[GeoDataFrame] = None
 
     ensco_db: str = None # points to a duckdb instance containing TP data
-
+    
+    actions: dict = field(default_factory=lambda: defaults.default_actions)  # whether to refesh db or use the existing data in db
+    dates: dict[str, datetime] = field(default_factory=lambda: {})
+    
     def __post_init__(self):
         self.active_layers = {
             l: getattr(self, l) for l in
             {"path", "points", "boundary"}
             if getattr(self, l) is not None
         }
-
+        
+        for key, val in defaults.default_actions.items():
+            if key not in self.actions:
+                self.actions[key] = val
+        
     def set_data(self, layer_name: str, data: GeoDataFrame | DataFrame):
         setattr(self, layer_name, data)
 
@@ -58,9 +68,26 @@ class BaseData:
         else:
             raise f"Unrecognised layer name: {layer_name}"
         
-
+    def refresh_data(self, layer_name: str) -> bool:
+        """Check if data for a given layer should be refreshed from source or use existing data in db"""
+        action = self.actions.get(layer_name)
+        
+        if action is None:
+            logging.warning(f"No action specified for layer {layer_name}, defaulting to 'refresh'")
+            return True
+    
+        if action == "refresh":
+            return True
+        elif action == "use_db":
+            return False
+        else:
+            logging.error(f"Unrecognised action '{action}' for layer {layer_name}, defaulting to 'refresh'")
+            return True
+    
 @dataclass
 class ControlsData:
+    __pydantic_config__ = {"arbitrary_types_allowed": True}
+
     hub_locations: str | List[str] | DBData = None
     blocks: str | List[str] | DBData = None
 
@@ -99,15 +126,8 @@ class GlobalParams:
 
 @dataclass
 class PreprocessParams:
-    gap_tolerance: float = 0.1
-    extend_tolerance: float = 0.1
-    split_lines: bool = True
-    split_lines_at_intersections: bool = False
-    segment_ug_path_length: float = 0
-    segment_ar_path_length: float = 0
-
-    consolidate_leadins: bool = True
-    demand_snapping_range: int = 1000
+    segment_length: float = 0
+    segment_method: str = "respect_curve_boundaries"  # options: "ignore_curve_boundaries", "respect_curve_boundaries"
 
     tag_filters: dict[str, Union[str, dict]] = field(default_factory=lambda: defaults.default_tag_filters)
 

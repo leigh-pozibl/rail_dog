@@ -13,9 +13,9 @@ from pandas import concat
 import duckdb
 
 from rail_dog.configs.params import BaseConfiguration
+from snappy_utils.db import query_table_sql
+from snappy_utils.io import get_data_source_features, select_from_precanned_table, upload_gdf
 from snappy_utils.params import Metadata, DBConnection, DBData, TABLES
-from snappy_utils.io import upload_gdf, read_graph
-from snappy_utils.db import query_table_sql, view_exists, create_view_from_boundary_intersection, insert_project_data
 
 
 def load_config_file(file_path: str, root_path: str, metadata: Metadata, db_env: str = None):
@@ -67,7 +67,9 @@ def load_json_blob(json_blob: json, metadata: Metadata, db_env: str = None):
     return parse_configs_to_dataclass(configs_data, ".", metadata, db_env)
 
 
-def parse_configs_to_dataclass(configs_data: str, root_path: str, metadata: Metadata, db_env: str = None) -> BaseConfiguration:
+def parse_configs_to_dataclass(
+    configs_data: str, root_path: str, metadata: Metadata, db_env: str = None, num_header_rows: int = 0
+) -> tuple[BaseConfiguration, DBConnection]:
     """
     Parses a JSON string into a BaseConfiguration dataclass instance.  Then loads any
     GIS data.
@@ -103,34 +105,36 @@ def parse_configs_to_dataclass(configs_data: str, root_path: str, metadata: Meta
             xlsx = dict()
             for file, sheet_names in config.base_data.excel_files.items():
                 file_path = os.path.join(root_path, file)
-                sheets = list(sheet_names.keys())
-
-                # excel_file = pd.ExcelFile(file_path)
-                # sheet_names = excel_file.sheet_names
-                # print(sheet_names)
-                # exit(1)
+                sheets = list(n for n in sheet_names.keys() if n != "HEADER_ROWS")
+                num_header_rows = sheet_names.get("HEADER_ROWS", 0)
 
                 try:
-                    xlsx = pd.read_excel(file_path, sheet_name=sheets)
+                    # xlsx = pd.read_excel(file_path, sheet_name=sheets)
+                    header, content = read_excel_with_header(file_path, sheets, num_header_rows)
                     logging.info(f"Loaded file: {file_path}")
                 except Exception as e:
                     logging.critical(f"Error loading file {file_path} {e}")
 
-            for sheet_name, sheet_alias in sheet_names.items():
-                xlsx[sheet_alias] = xlsx.pop(sheet_name)
-                # xlsx[sheet_alias].set_index("Chainage ID", inplace=True)
+                for sheet_name, sheet_alias in sheet_names.items():
+                    if sheet_name == "HEADER_ROWS":
+                        continue
+                    xlsx[sheet_alias] = content.pop(sheet_name)
+                    if header is not None:
+                        xlsx[f"{sheet_alias}-HEADER"] = header.pop(sheet_name)
 
-            config.base_data.update_dict("track_data", xlsx)
-            
-            # write the sheets to csv
-            output_dir = os.path.dirname(file_path)
-            for sheet_name, df in xlsx.items():
-                csv_file = os.path.join(output_dir, f"{sheet_name}.csv")
-                try:
-                    df.to_csv(csv_file, index=False)
-                    logging.info(f"Exported {sheet_name} to {csv_file}")
-                except Exception as e:
-                    logging.critical(f"Error exporting {sheet_name} to CSV: {e}")
+                config.base_data.update_dict("track_data", xlsx)
+                
+                # write the sheets to csv
+                output_dir = os.path.join(os.path.dirname(file_path), "..", "processed")
+                if not os.path.exists(output_dir):
+                    os.mkdir(output_dir)
+                for sheet_name, df in xlsx.items():
+                    csv_file = os.path.join(output_dir, f"{sheet_name}.csv")
+                    try:
+                        df.to_csv(csv_file, index=False)
+                        logging.info(f"Exported {sheet_name} to {csv_file}")
+                    except Exception as e:
+                        logging.critical(f"Error exporting {sheet_name} to CSV: {e}")
 
         # read csv files
         if config.base_data.csv_files:
@@ -147,7 +151,7 @@ def parse_configs_to_dataclass(configs_data: str, root_path: str, metadata: Meta
 
             config.base_data.update_dict("track_data", csv)
 
-        # read csv files
+        # read ensco rp and tg raw data
         con = None
         if config.base_data.rp_raw_data or config.base_data.tg_raw_data:
             duckdb_path = os.path.join(root_path, "ensco_data.duckdb")
@@ -155,35 +159,54 @@ def parse_configs_to_dataclass(configs_data: str, root_path: str, metadata: Meta
         elif config.base_data.ensco_db:
             duckdb_path = os.path.join(root_path, config.base_data.ensco_db)
             con = duckdb.connect(duckdb_path)
-            results = con.execute("SELECT COUNT(*) FROM rp_data").fetchone()[0]
-            logging.info(f"Loaded {results} rp_data records")
-            results = con.execute("SELECT COUNT(*) FROM tg_data").fetchone()[0]
-            logging.info(f"Loaded {results} tg_data records")
-
-        if config.base_data.rp_raw_data:
-            con.execute("DROP TABLE IF EXISTS rp_data")
-            con.execute(f"""CREATE TABLE rp_data AS SELECT * FROM read_csv_auto('{config.base_data.rp_raw_data}/*.csv')""")
-            results = con.execute("SELECT COUNT(*) FROM rp_data").fetchone()[0]
-            logging.info(f"Loaded {results} rp_raw_data records")
-
-        if config.base_data.tg_raw_data:
-            con.execute("DROP TABLE IF EXISTS tg_data")
-            con.execute(f"""CREATE TABLE tg_data AS SELECT * FROM read_csv_auto('{config.base_data.tg_raw_data}/*.csv')""")
-            results = con.execute("SELECT COUNT(*) FROM tg_data").fetchone()[0]
-            logging.info(f"Loaded {results} tg_raw_data records")
+            results = con.execute("SELECT COUNT(*) FROM rp_data").fetchone()
+            if results:
+                logging.info(f"Loaded {results[0]} rp_data records")
+            else:
+                logging.warning(f"Loaded 0 rp_data records")
+            results = con.execute("SELECT COUNT(*) FROM tg_data").fetchone()
+            if results:
+                logging.info(f"Loaded {results[0]} tg_data records")
+            else:
+                logging.warning(f"Loaded 0 tg_data records")
+        else:
+            logging.error("No ensco raw data detected")
 
         if con:
-            for table in ["rp_data", "tg_data"]:
+            tables = set()
+            if config.base_data.rp_raw_data:
+                con.execute("DROP TABLE IF EXISTS rp_data")
+                con.execute(f"""CREATE TABLE rp_data AS SELECT * FROM read_csv_auto('{config.base_data.rp_raw_data}/*.csv')""")
+                results = con.execute("SELECT COUNT(*) FROM rp_data").fetchone()
+                if results:
+                    logging.info(f"Loaded {results[0]} rp_raw_data records")
+                    tables.add("rp_data")
+                else:
+                    logging.warning(f"Loaded 0 rp_raw_data records")
+
+            if config.base_data.tg_raw_data:
+                con.execute("DROP TABLE IF EXISTS tg_data")
+                con.execute(f"""CREATE TABLE tg_data AS SELECT * FROM read_csv_auto('{config.base_data.tg_raw_data}/*.csv')""")
+                results = con.execute("SELECT COUNT(*) FROM tg_data").fetchone()
+                if results:
+                    logging.info(f"Loaded {results[0]} tg_raw_data records")
+                    tables.add("tg_data")
+                else:
+                    logging.warning(f"Loaded 0 tg_raw_data records")
+
+            for table in tables:
                 _data = con.execute(f"SELECT * FROM {table}").df()
 
+                logging.info(f"Creating geometries for {table}")
                 if "Longitude" in _data.columns:
-                    _data["geometry"] = _data.apply(lambda x: Point(x["Longitude"], x["Latitude"]), axis=1)
+                    _data["geometry"] = gpd.points_from_xy(_data["Longitude"], _data["Latitude"])
                 elif "geometry_wkb" in _data.columns:
                     _data['geometry'] = _data['geometry_wkb'].apply(shapely.wkt.loads)
                     _data.drop(columns=["geometry_wkb"], inplace=True)
                 else:
                     logging.critical(f"No geometry column found in {table}")
 
+                logging.info("...done")
                 _data = gpd.GeoDataFrame(_data, geometry="geometry", crs="epsg:4326")
                 config.base_data.set_data(table, _data)
 
@@ -262,7 +285,11 @@ def load_geospatial_data_from_db(
     boundary = data_container.active_layers.get("boundary")
     if boundary:
         if boundary.action == "push":
-            load_geospatial_data_from_file(data_container, root_path, named_layers=[("boundary", boundary.source_file)])
+            load_geospatial_data_from_file(
+                data_container,
+                root_path,
+                named_layers=[("boundary", boundary.source_file)]
+            )
 
             upload_gdf(
                 data_container.boundary,
@@ -270,11 +297,17 @@ def load_geospatial_data_from_db(
                 "polygonfeature",
                 label=boundary.label,
                 metadata=metadata,
+                description=boundary.description,
                 expected_geom_types=TABLES["polygonfeature"]
             )
 
         elif boundary.action == "pull":
-            sql = query_table_sql(boundary.table_name, label=None, metadata=metadata, filters=boundary.filters)
+            sql = query_table_sql(
+                boundary.table_name,
+                label=None,
+                metadata=metadata,
+                filters=boundary.filters
+            )
             gdf = gpd.read_postgis(sql, db.engine, geom_col="geometry")
             data_container.set_data("boundary", gdf)
             logging.info(f"Found {len(gdf)} {boundary.table_name} features for layer 'boundary'")
@@ -291,14 +324,18 @@ def load_geospatial_data_from_db(
 
         # optionally, read a file and then upload to the db
         elif query_data.action == "push":
-            load_geospatial_data_from_file(data_container, root_path, named_layers=[(layer_name, layer_data.source_file)])
+            load_geospatial_data_from_file(
+                data_container,
+                root_path,
+                named_layers=[(layer_name, layer_data.source_file)]
+            )
 
             table_name = data_container.table_lookup(layer_name)
             upload_gdf(
                 data_container.layer_name,
                 db,
                 table_name,
-                label=layer_name,
+                source_name=layer_name,
                 metadata=metadata,
                 expected_geom_types=TABLES[table_name]
             )
@@ -308,29 +345,62 @@ def load_geospatial_data_from_db(
             
             # this is to pull data from openstreetmaps|openaddresses and then save a copy into a project
             if query_data.table_name in {"openstreetmaps", "openaddresses"}:
-                view_name = f"view_{layer_name}_{metadata.project_id.replace('-','')}"
-                table_name = data_container.table_lookup(layer_name)
-
-                if not view_exists(db, view_name) or query_data.refresh:
-                    logging.info(f"Creating view: {view_name}")
-                    create_view_from_boundary_intersection(db, view_name, query_data)
-                    logging.info(f"Inserting data into table: {table_name}")
-                    insert_project_data(db, table_name, view_name, layer_name, metadata)
-
-                sql = query_table_sql(table_name, label=layer_name, metadata=metadata)
-                gdf = gpd.read_postgis(sql, db.engine, geom_col="geometry")
-                data_container.set_data(layer_name, gdf)
-                logging.info(f"Found {len(gdf)} {query_data.table_name} features for layer '{layer_name}'")
+                gdf = select_from_precanned_table(query_data, metadata, db, return_gdf=True, refresh=False)
 
             # this is the case where we have just a source_id supplied - tells us all we need to know
             elif query_data.source_id:
-                sql = query_table_sql(query_data.table_name, label=None, metadata=None, filters=query_data.filters)
-                gdf = gpd.read_postgis(sql, db.engine, geom_col="geometry")
-                data_container.set_data(layer_name, gdf)
-                logging.info(f"Found {len(gdf)} {query_data.table_name} features for layer '{layer_name}'")
+                if query_data.filters:
+                    logging.error(
+                        f"Problem with input configuration for layer {layer_name}, \
+                        either specify a source_id or filters but not both"
+                    )
+                    sys.exit(1)
+                gdf = get_data_source_features(
+                    query_data.source_id["value"],
+                    query_data.table_name,
+                    db,
+                    metadata=None,
+                )
 
             else:
-                sql = query_table_sql(query_data.table_name, label=None, metadata=metadata, filters=query_data.filters)
+                sql = query_table_sql(
+                    query_data.table_name,
+                    label=None,
+                    metadata=metadata,
+                    filters=query_data.filters,
+                )
                 gdf = gpd.read_postgis(sql, db.engine, geom_col="geometry")
-                data_container.set_data(layer_name, gdf)
-                logging.info(f"Found {len(gdf)} {query_data.table_name} features for layer '{layer_name}'")
+
+            data_container.set_data(layer_name, gdf)
+            logging.info(f"Found {len(gdf)} {query_data.table_name} features for layer '{layer_name}'")
+
+
+def read_excel_with_header(file_path: str, sheets: list, num_header_rows: int = 0) -> tuple:
+    """
+    Read Excel file with header rows stored separately.
+    
+    Args:
+        filepath: Path to Excel file
+        sheet_name: Sheet name or index
+        num_header_rows: Number of rows to treat as header
+        
+    Returns:
+        (header_df, content_df): Tuple of header and content DataFrames
+    """
+    if num_header_rows > 0:
+        header = pd.read_excel(
+            file_path,
+            sheet_name=sheets,
+            nrows=num_header_rows,
+            header=None
+        )
+        content = pd.read_excel(
+            file_path,
+            sheet_name=sheets,
+            skiprows=num_header_rows
+        )
+    else:
+        header = None
+        content = pd.read_excel(file_path, sheet_name=sheets)
+
+    return header, content
