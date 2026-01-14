@@ -6,7 +6,6 @@ import toml
 import yaml
 
 import shapely
-from shapely.geometry import Point
 import geopandas as gpd
 import pandas as pd
 from pandas import concat
@@ -14,8 +13,12 @@ import duckdb
 
 from rail_dog.configs.params import BaseConfiguration
 from snappy_utils.db import query_table_sql
+from snappy_utils.general import parse_collection_date
 from snappy_utils.io import get_data_source_features, select_from_precanned_table, upload_gdf
 from snappy_utils.params import Metadata, DBConnection, DBData, TABLES
+
+
+RESERVED_FIELDS = {"HEADER_ROWS", "COLLECTION_DATE"}
 
 
 def load_config_file(file_path: str, root_path: str, metadata: Metadata, db_env: str = None):
@@ -102,33 +105,38 @@ def parse_configs_to_dataclass(
 
         # read xlsx files
         if config.base_data.excel_files:
-            xlsx = dict()
+            xlsx_data = dict()
+            collection_dates = dict()
             for file, sheet_names in config.base_data.excel_files.items():
                 file_path = os.path.join(root_path, file)
-                sheets = list(n for n in sheet_names.keys() if n != "HEADER_ROWS")
+                sheets = list(n for n in sheet_names.keys() if n not in RESERVED_FIELDS)
                 num_header_rows = sheet_names.get("HEADER_ROWS", 0)
+                date_str = sheet_names.get("COLLECTION_DATE")
+                collection_date = parse_collection_date(date_str)
 
                 try:
-                    # xlsx = pd.read_excel(file_path, sheet_name=sheets)
                     header, content = read_excel_with_header(file_path, sheets, num_header_rows)
                     logging.info(f"Loaded file: {file_path}")
                 except Exception as e:
                     logging.critical(f"Error loading file {file_path} {e}")
 
                 for sheet_name, sheet_alias in sheet_names.items():
-                    if sheet_name == "HEADER_ROWS":
+                    if sheet_name in RESERVED_FIELDS:
                         continue
-                    xlsx[sheet_alias] = content.pop(sheet_name)
+                    xlsx_data[sheet_alias] = content.pop(sheet_name)
                     if header is not None:
-                        xlsx[f"{sheet_alias}-HEADER"] = header.pop(sheet_name)
+                        xlsx_data[f"{sheet_alias}-HEADER"] = header.pop(sheet_name)
+                    if collection_date is not None:    
+                        collection_dates[sheet_alias] = collection_date
 
-                config.base_data.update_dict("track_data", xlsx)
+                config.base_data.update_dict("track_data", xlsx_data)
+                config.base_data.update_dict("collection_dates", collection_dates)
                 
                 # write the sheets to csv
                 output_dir = os.path.join(os.path.dirname(file_path), "..", "processed")
                 if not os.path.exists(output_dir):
                     os.mkdir(output_dir)
-                for sheet_name, df in xlsx.items():
+                for sheet_name, df in xlsx_data.items():
                     csv_file = os.path.join(output_dir, f"{sheet_name}.csv")
                     try:
                         df.to_csv(csv_file, index=False)

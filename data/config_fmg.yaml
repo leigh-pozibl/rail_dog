@@ -2,7 +2,8 @@
 
 {
     "base_data": {
-        "path": "base_data/raw/fmg_railway_design_centreline_20250504.geojson",
+        # "path": "base_data/raw/fmg_railway_design_centreline_20250504.geojson",
+        "path": "base_data/raw/fmg_railway_design_centreline_v2.geojson",
         # "points": "base_data/raw/switches.geojson",
         # "excel_files": {
         #   "base_data/raw/Master - Work Plan_Post Africa.xlsx": {
@@ -16,37 +17,53 @@
         #   }
         # },
         "excel_files": {
+            # "base_data/raw/curves_and_tangents.xlsx": {
+            #     "mainline": "CURVE_SECTIONS_ML",
+            #     "solomon": "CURVE_SECTIONS_SL",
+            #     "eliwana": "CURVE_SECTIONS_EL",
+            # },
             # "base_data/raw/assets.xlsx": {
             #     "assets": "ASSETS"
             # },
             # "base_data/raw/sap.xlsx": {
-            #     "sap": "SAP"
-            # },
-            # "base_data/raw/curves_and_tangents.xlsx": {
-            #     "mainline": "CURVE_SECTIONS_MLX",
-            #     "solomon": "CURVE_SECTIONS_SML",
-            #     "eliwana": "CURVE_SECTIONS_EML",
-            # },
-            # "base_data/raw/gbfi.xlsx": {
-            #     "Main": "GBFI_MLX",
-            #     "Solomon": "GBFI_SML",
-            #     "Eliwana": "GBFI_EML",
-            #     "HEADER_ROWS": 6,
+            #     "sap": "SAP",
             # },
             # "base_data/raw/tsr.xlsx": {
             #     "TSR Open": "TSR_OPEN",
             #     "TSR Complete": "TSR_COMPLETE",
             # },
-            "base_data/raw/tqi.xlsx": {
-                "in": "TQI",
-            },
+            # the following data sources we will log against a collection date
+            # "base_data/raw/gbfi.xlsx": {
+            #     "Main": "GBFI_ML",
+            #     "Solomon": "GBFI_SL",
+            #     "Eliwana": "GBFI_EL",
+            #     "HEADER_ROWS": 6,
+            #     "COLLECTION_DATE": "2024-09",
+            # },
+            # "base_data/raw/tqi.xlsx": {
+            #     "in": "TQI",
+            #     "COLLECTION_DATE": "2025-03",
+            # },
+            # "base_data/raw/dtr.xlsx": {
+            #     "All Data": "DTR",
+            #     "COLLECTION_DATE": "2025-02-27",
+            #     "HEADER_ROWS": 8,
+            # },
+            # "base_data/raw/ballast.xlsx": {
+            #     # "Ballast Thomas": "BALL_TL",  # don't use this - TL data is in the ML tab
+            #     "Ballast Mainline": "BALL_ML",
+            #     "Ballast Solomon": "BALL_SL",
+            #     "Ballast Eliwana": "BALL_EL",
+            #     "COLLECTION_DATE": "2024-10-01",
+            #     "HEADER_ROWS": 7,
+            # },
         },
-        "csv_files": [
-            "base_data/processed/TLX.csv",
-            "base_data/processed/MLX.csv",
-            "base_data/processed/SML.csv",
-            "base_data/processed/EML.csv",
-        ],
+        # "csv_files": [
+        #     "base_data/processed/TLX.csv",
+        #     "base_data/processed/MLX.csv",
+        #     "base_data/processed/SML.csv",
+        #     "base_data/processed/EML.csv",
+        # ],
         # "rp_raw_data": "base_data/ensco/Mar 2025/RP",
         # "ensco_db": "process/ensco_data_corrected.duckdb"
         # "tg_raw_data": "base_data/ensco/Mar 2025/TG",
@@ -59,11 +76,15 @@
             "GBFI": "use_db",
             "TSR": "use_db",
             "TG": "use_db",
-            "TQI": "refresh",
+            "TQI": "use_db",
+            "DTR": "use_db",
+            "BALL": "use_db",
         },
-        "dates": {
-            "SAP": "2024-09-01",
-            "GBFI": "2024-09-01",
+        "analysis_dates": {
+            "GBFI": "2024-09",
+            "TQI": "2025-03",
+            "DTR": "2025-02-27",
+            "BALL": "2024-10-01",
         }
     },
 

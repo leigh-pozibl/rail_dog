@@ -1,5 +1,5 @@
 import logging
-from typing import Dict
+from typing import Dict, cast
 from datetime import datetime
 
 from pandas import DataFrame
@@ -10,31 +10,53 @@ from typing import List, Optional, Union
 
 from rail_dog.configs import defaults
 from snappy_utils.params import DBData
+from snappy_utils.general import parse_collection_date
 
 
 @dataclass
 class BaseData:
     __pydantic_config__ = {"arbitrary_types_allowed": True}
 
-    path: str | List[str] | DBData = None
-    points: str | List[str] = None
+    path: Optional[str | List[str] | DBData] = None
+    points: Optional[str | List[str]] = None
 
-    boundary: str | List[str] | DBData = None
+    boundary: Optional[str | List[str] | DBData] = None
 
-    excel_files: Dict = None  # data is read and packed into track_data as a dict of DataFrames
-    csv_files: List = None  # data is read and packed into track_data as a dict of DataFrames
-    track_data: Dict = field(default_factory=lambda: {})
+    excel_files: Optional[Dict] = None  # data is read and packed into track_data as a dict of DataFrames
+    csv_files: Optional[List] = None  # data is read and packed into track_data as a dict of DataFrames
+    
+    track_data: Optional[Dict] = field(default_factory=lambda: {})
+    
+    """
+    If the special field "COLLECTION_DATE" is included in the xlsx dict, then the date is added to this dict
+    eg: 
+        "excel_files": {
+            "base_data/raw/tsr.xlsx": {
+                "TSR Open": "TSR_OPEN",
+                "TSR Complete": "TSR_COMPLETE",
+                "COLLECTION_DATE": "2025-03-25",
+            },
+    """
+    collection_dates: Optional[Dict] = field(default_factory=lambda: {})
 
-    rp_raw_data: str = None # point to a folder containing raw RP data
-    tg_raw_data: str = None # point to a folder containing raw TP data
+    rp_raw_data: Optional[str] = None # point to a folder containing raw RP data
+    tg_raw_data: Optional[str] = None # point to a folder containing raw TP data
 
     rp_data: Optional[GeoDataFrame] = None
     tg_data: Optional[GeoDataFrame] = None
 
-    ensco_db: str = None # points to a duckdb instance containing TP data
+    ensco_db: Optional[str] = None # points to a duckdb instance containing TP data
     
     actions: dict = field(default_factory=lambda: defaults.default_actions)  # whether to refesh db or use the existing data in db
-    dates: dict[str, datetime] = field(default_factory=lambda: {})
+    
+    """
+    Specify a dict indicating the collection dates to use for each data source, eg:
+        "dates": {
+            "SAP": "2024-09-01",
+            "GBFI": "2024-09-01",
+        }
+    """
+    analysis_dates: dict = field(default_factory=lambda: {})
     
     def __post_init__(self):
         self.active_layers = {
@@ -46,6 +68,9 @@ class BaseData:
         for key, val in defaults.default_actions.items():
             if key not in self.actions:
                 self.actions[key] = val
+                
+        for key, val in self.analysis_dates.items():
+            self.analysis_dates[key] = parse_collection_date(val)
         
     def set_data(self, layer_name: str, data: GeoDataFrame | DataFrame):
         setattr(self, layer_name, data)
@@ -95,7 +120,7 @@ class ControlsData:
         self.active_layers = {
             l: getattr(self, l) for l in {"hub_locations", "blocks"}
             if getattr(self, l) is not None
-        }
+        }   
 
     def set_data(self, layer_name: str, data: GeoDataFrame):
         setattr(self, layer_name, data)

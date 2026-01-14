@@ -1,5 +1,6 @@
-import pandas as pd
+from typing import Optional, Set, List
 
+import pandas as pd
 from pydantic.dataclasses import dataclass
 
 
@@ -135,5 +136,118 @@ class GBFI_FOULED_THRESHOLDS():
                 status_counts[threshold.status] = count
         return status_counts
                 
-                
-        
+
+@dataclass
+class TQIThresholds:
+    status: str
+    min: int
+    max: int
+
+
+class TQI_THRESHOLDS():
+    def __init__(self):
+        self.good = TQIThresholds("good", 0, 15)
+        self.satisfactory = TQIThresholds("satisfactory", 15, 20)
+        self.poor = TQIThresholds("poor", 20, 30)
+        self.critical = TQIThresholds("critical", 30, 999)
+
+
+    def get_status(self, avg_value: float) -> str:
+        for attr in dir(self):
+            threshold = getattr(self, attr)
+            if isinstance(threshold, TQIThresholds):
+                if threshold.min <= avg_value < threshold.max:
+                    return threshold.status
+        return "unknown"
+
+
+PLAINLINE_TREATMENT_THRESHOLDS = {
+    "gbfi_bog_threshold_1": 40,                 # T8 - gbfi_max_avg threshold for bog hole
+    "gbfi_bog_threshold_2": 40,                 # T9 - gbfi_max_avg threshold for bog hole (alternative)
+    "ballast_clean_threshold": 20,              # V10 - gbfi_avg threshold for clean (greater than)
+    "lift_tamp_gbfi_avg_threshold": 20,         # V11 - gbfi_avg threshold for lift & tamp (less than)
+    "lift_tamp_ballast_depth_threshold": 0.25,  # Z11 - ballast_depth threshold for lift & tamp (less than)
+    "tamp_only_gbfi_avg_threshold": 20,         # V12 - gbfi_avg threshold for tamp only (less than)
+    "tamp_only_ballast_depth_threshold": 0.25,  # Z12 - ballast_depth threshold for tamp only (greater than)
+}
+
+
+LX_TREATMENT_THRESHOLDS = {
+    "lx_renewal_gbfi_max_threshold": 40,        # T14 - gbfi_max_avg threshold for Level Crossing Renewal
+    "lx_renewal_gbfi_avg_threshold": 30,        # V14 - gbfi_avg_avg threshold for Level Crossing Renewal
+
+    "tamp_only_gbfi_avg_threshold": 30,         # V18 - gbfi_avg threshold for tamp only (greater than)
+    "tamp_only_ballast_depth_threshold": 0.25,  # Z12 - ballast_depth threshold for lift & tamp (greater than)
+
+    "gbfi_bog_threshold_2": 40,                 # T9 - gbfi_max_avg threshold for bog hole (alternative)
+    "ballast_clean_threshold": 20,              # V10 - gbfi_avg threshold for clean (greater than)
+    "lift_tamp_gbfi_avg_threshold": 20,         # V11 - gbfi_avg threshold for lift & tamp (less than)
+    "lift_tamp_ballast_depth_threshold": 0.25,  # Z11 - ballast_depth threshold for lift & tamp (less than)
+
+}
+
+
+IRJ_TREATMENT_THRESHOLDS = {
+    "irj_renewal_gbfi_max_threshold": 40,       # T15 - gbfi_max_avg threshold for IRJ Renewal
+    "tamp_only_gbfi_avg_threshold": 30,         # V18 - gbfi_avg threshold for tamp only (greater than)
+    "tamp_only_ballast_depth_threshold": 0.25,  # Z18 - ballast_depth threshold for tamp only (greater than or equal)
+}
+
+
+TURNOUT_TREATMENT_THRESHOLDS = {
+    "turnout_renewal_ballast_depth_threshold": 0.25,  # Z16 - ballast_depth threshold for turnout renewal
+    "tamp_only_gbfi_avg_threshold": 30,               # V18 - gbfi_avg threshold for tamp only (greater than)
+    "tamp_only_ballast_depth_threshold": 0.25,        # Z18 - ballast_depth threshold for tamp only (greater than or equal)
+}
+
+
+BRIDGE_TREATMENT_THRESHOLDS = {
+    "bridge_renewal_ballast_depth_threshold": 0.25,   # Z17 - ballast_depth threshold for bridge renewal
+    "bridge_renewal_gbfi_avg_threshold": 20,          # V17 - gbfi_avg threshold for bridge renewal (greater than)
+    "tamp_only_gbfi_avg_threshold": 30,               # V18 - gbfi_avg threshold for tamp only (greater than)
+    "tamp_only_ballast_depth_threshold": 0.25,        # Z18 - ballast_depth threshold for tamp only (greater than or equal)
+}
+
+# @dataclass
+# class TreatmentThresholds:
+#     treatment:str
+#     tqi_status: Optional[Set[str]] = None
+#     gbfi_max_avg: Optional[float] = None
+#     gbfi_avg: Optional[float] = None
+#     monash_ioc: Optional[Set[str]] = None
+#     tsr_history: Optional[bool] = None
+#     ballast_depth: Optional[float] = None
+#     wo_thresholds_exceedance: Optional[bool] = None
+
+# class PLAINLINE_TREATMENT_THRESHOLDS():
+#     def __init__(self):
+#         self.bog_hole_1 = TreatmentThresholds(
+#             treatment="Local Formation Renewal (Bog Hole)",
+#             tqi_status=set("poor", "critical"),
+#             gbfi_max_avg=40,
+#         )
+#         self.bog_hole_2 = TreatmentThresholds(
+#             treatment="Local Formation Renewal (Bog Hole)",
+#             gbfi_max_avg=40,
+#             monash_ioc=set("s1", "s2"),
+#             tsr_history=True
+#         )
+#         self.ballast_clean = TreatmentThresholds(
+#             treatment="Ballast Clean",
+#             tqi_status=set("poor", "critical"),
+#             gbfi_avg=20,
+#         )
+#         self.lift_tamp = TreatmentThresholds(
+#             treatment="Lift & Tamp",
+#             tqi_status=set("poor", "critical"),
+#             gbfi_avg=20,
+#             ballast_depth=0.25
+#         )
+#         self.tamp_only = TreatmentThresholds(
+#             treatment="Tamp Only",
+#             tqi_status=set("poor", "critical"),
+#             gbfi_avg=20,
+#             ballast_depth=0.25
+#         )
+
+        										

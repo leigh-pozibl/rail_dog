@@ -53,12 +53,13 @@ class RailSegment(SQLModel, table=True):
     # Basic attributes
     chainage_id: str = Field(max_length=100, unique=True, index=True)
     line: str = Field(max_length=10)
-    line_code: str = Field(max_length=3)  # TLX, MLX, SML, EML
+    line_code: str = Field(max_length=3)  # TL, ML, SL, EL
     section: str = Field(max_length=100)
     section_name: str = Field(max_length=100)
     station: str = Field(max_length=100)
     chainage_start_km: float
     chainage_end_km: float
+    chainage_mid_km: float
     segment_length_m: float
 
     # Coordinates
@@ -91,7 +92,7 @@ class RailSection(SQLModel, table=True):
     # Basic attributes
     section_id: str = Field(max_length=100, unique=True, index=True)
     line: str = Field(max_length=10)
-    line_code: str = Field(max_length=3)  # TLX, MLX, SML, EML
+    line_code: str = Field(max_length=3)  # TL, ML, SL, EL
     type: str = Field(max_length=10)  # tangent or curve
     chainage_start_km: float
     chainage_end_km: float
@@ -372,7 +373,7 @@ def gbfi_column_mapping() -> dict:
         "GBFI_Right4": "right",
     }
 
-  
+
 def extract_collection_date_from_header(gbfi_header: pd.DataFrame):
     # Extract collection date from header
     if len(gbfi_header) >= 4:
@@ -402,13 +403,70 @@ class AggGBFI(SQLModel, table=True):
     fouled: int
     highly_fouled: int
     fouled_zone: bool
-    ballast_centre: Optional[float]
-    ballast_lt_250mm: Optional[bool]
     
     # Metadata
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
+class BallastRecord(SQLModel, table=True):
+    """Ballast condition records."""
+    __tablename__ = "ballast_records"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    
+    # ballast info
+    collection_date: datetime = Field(index=True)
+    chainage_start_km: float = Field(index=True)
+    
+    left: float
+    center: float
+    right: float
+    # subballast_left: Optional[float] = None
+    # subballast_center: Optional[float] = None
+    # subballast_right: Optional[float] = None
+    
+    # Location
+    line_code: str = Field(max_length=3, index=True)
+
+    # Geometry - accepts shapely Point objects or WKT strings
+    geometry: Any = Field(sa_column=Column(Geometry("POINT", srid=EPSG)))
+    
+    # Metadata
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    
+    
+def ballast_column_mapping() -> dict:
+    return {
+        "Distance(km+m)": "distance_str",
+        "WE(m)": "easting",
+        "SN(m)": "northing",
+        "Long_0": "lng",
+        "Lat_0": "lat",
+        "Ballast_Left (m)": "left",
+        "Ballast_Center (m)": "center",
+        "Ballast_Right (m)": "right",
+        "Subballast_Left (m)": "subballast_left",
+        "Subballast_Center (m)": "subballast_center",
+        "Subballast_Right (m)": "subballast_right",
+    }
+    
+
+class AggBallast(SQLModel, table=True):
+    """Ballast records aggregated to chainage segments."""
+    __tablename__ = "agg_ballast"
+    
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    # Aggregated Ballast info
+    chainage_id: str = Field(max_length=100, index=True)
+    collection_date: datetime = Field(index=True)
+    ballast_centre: float
+    ballast_lt_250mm: bool
+    
+    # Metadata
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    
+    
 class TSRRecord(SQLModel, table=True):
     """Temporary speed restriction records."""
     __tablename__ = "tsr_records"
@@ -456,19 +514,91 @@ class TQIRecord(SQLModel, table=True):
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     
     # tqi info
-    line: str = Field(max_length=10, index=True)
-    line_code: str = Field(max_length=3, index=True)
-    line_section: str = Field(max_length=20)
-    status: str = Field(max_length=10, index=True)
+    line: str = Field(max_length=10, index=True)    # Thomas, Mainline, Solomon, Eliwana
+    line_code: str = Field(max_length=3, index=True)    # ML, TH, SL, EL
+    line_class: str = Field(max_length=10, index=True)  # main, bypass, loop
+    
+    asset_name: str     # eg: "MLE_3.963_4.301"
     chainage_start_km: float = Field(index=True)
     chainage_end_km: float = Field(index=True)
+    chainage_mid_km: float = Field(index=True)
     tqi: float
-    run_id: str
-    section_name: str
+    run_id: str    
     
     # Metadata
+    collection_date: datetime = Field(index=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
+
+class AggTQI(SQLModel, table=True):
+    """TQI records aggregated to chainage segments."""
+    __tablename__ = "agg_tqi"
+    
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    # Aggregated TQI info
+    chainage_id: str = Field(max_length=100, index=True)
+    # line_code: str = Field(max_length=3, index=True)    # ML, TH, SL, EL
+    # line_class: str = Field(max_length=10, index=True)  # main, bypass, loop
+    tqi: float
+    status: str
+    
+    # Metadata
+    collection_date: datetime = Field(index=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    
+
+class DTRRecord(SQLModel, table=True):
+    """Dynamic Track Force records."""
+    __tablename__ = "dtr_records"
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+    
+    # dtr info
+    line_code: str = Field(max_length=3, index=True)    # ML, TH, SL, EL
+    # line_class: str = Field(max_length=10, index=True)  # main, bypass, loop
+    chainage_km: float
+    channel: str
+    track_features: str
+    units: str = Field(max_length=3)
+    severity: int = Field(max_length=1)
+    recent_max: float
+    recent_avg: float
+    getting_worse: int = Field(max_length=2)
+    
+    # Metadata
+    collection_date: datetime = Field(index=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class AggDTR(SQLModel, table=True):
+    """DTR records aggregated to chainage segments."""
+    __tablename__ = "agg_dtr"
+    
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    # Aggregated DTR info
+    chainage_id: str = Field(max_length=100, index=True)
+    # line_code: str = Field(max_length=3, index=True)    # ML, TH, SL, EL
+    # line_class: str = Field(max_length=10, index=True)  # main, bypass, loop
+    
+    # counts of samples
+    sf_accel_w: int = Field(max_length=3)
+    sf_accel_e: int = Field(max_length=3)
+    suspension: int  = Field(max_length=3)
+    rock: int = Field(max_length=3)
+    bounce: int = Field(max_length=3)
+    
+    dtf_s1: int = Field(max_length=1) # severity 1 count
+    dtf_s2: int = Field(max_length=1) # severity 2 count
+    dtf_s3: int = Field(max_length=1) # severity 3 count
+    worst_dtf: str = Field(max_length=2) # s1, s2, s3 where s1 is worse
+    getting_worse: int = Field(max_length=2) 
+    
+    # Metadata
+    collection_date: datetime = Field(index=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    
     
 # ==============================================================================
 # Helper Functions

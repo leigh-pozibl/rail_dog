@@ -32,6 +32,8 @@ default_actions = {
     "CURVE_SECTIONS": "refresh",
     "GBFI": "refresh",
     "TSR": "refresh",
+    "TG": "refresh",
+    "TQI": "refresh",
 }
 
 # use these to specify filters to apply to nodes and edges a graph, based on their tags.

@@ -5,7 +5,8 @@ import pandas as pd
 import geopandas as gpd
 from shapely.geometry import Point, LineString, Polygon
 
-from rail_dog.configs.library import LINE_REGIONS, MAIN_LINE_IDENTIFIERS, OTHER_LINE_IDENTIFIERS
+from rail_dog.configs.library import SECTIONS, get_section_metadata
+
 from snappy_utils.general import clean_string
 
 
@@ -78,46 +79,44 @@ def apply_corrections(gdf: gpd.GeoDataFrame, THOMAS_END: float, column_name_mapp
     gdf["chainage_km"] = gdf["major"] + gdf["minor"] / 1000
 
     # Pre-split IDs once (split all underscores to get region and line_type)
-    id_split = gdf["id"].str.split("_", expand=True)
+    id_split = gdf["id"].str.split("_", n=1, expand=True)
     region = id_split[0]
-    line_type = id_split[1]
+    gdf["asset_name"] = id_split[1]
 
     # Populate the line_region
     gdf["line_region"] = region
-    invalid_regions = ~region.isin(LINE_REGIONS)
+    invalid_regions = ~region.isin(SECTIONS)
     if invalid_regions.any():
         for bad_id in gdf.loc[invalid_regions, "id"].unique():
             logging.warning(f"Unidentified region for id: {bad_id}")
 
     # Populate the line_code
-    conditions = [
-        # Thomas MLW special case - early section
-        (region == "Thomas") & (line_type == "MLW") & (gdf["chainage_km"] <= THOMAS_END),
-        # Thomas MLW special case - late section
-        (region == "Thomas") & (line_type == "MLW") & (gdf["chainage_km"] > THOMAS_END),
-        # Firetail correction
-        (region == "Firetail") & (line_type == "ELB"),
-        # Future correction
-        (region == "Future") & (line_type == "SLB"),
-        # Main line identifiers (standard mapping)
-        line_type.isin(MAIN_LINE_IDENTIFIERS.keys())
-    ]
+    # conditions = [
+    #     # Thomas MLW special case - early section
+    #     (region == "Thomas") & (line_type == "MLW") & (gdf["chainage_km"] <= THOMAS_END),
+    #     # Thomas MLW special case - late section
+    #     (region == "Thomas") & (line_type == "MLW") & (gdf["chainage_km"] > THOMAS_END),
+    #     # Firetail correction
+    #     (region == "Firetail") & (line_type == "ELB"),
+    #     # Future correction
+    #     (region == "Future") & (line_type == "SLB"),
+    #     # Main line identifiers (standard mapping)
+    #     line_type.isin(MAIN_LINE_IDENTIFIERS.keys())
+    # ]
 
-    choices = [
-        "TLX",  # Thomas early section
-        "MLX",  # Thomas late section
-        "SML",  # Firetail
-        "EML",  # Future
-        line_type.map(MAIN_LINE_IDENTIFIERS)  # Regular mapping
-    ]
+    # choices = [
+    #     "TL",  # Thomas early section
+    #     "ML",  # Thomas late section
+    #     "SL",  # Firetail
+    #     "EL",  # Future
+    #     line_type.map(MAIN_LINE_IDENTIFIERS)  # Regular mapping
+    # ]
 
     # Apply conditions
-    gdf["line_code"] = np.select(conditions, choices, default="OTH")
-
-    # Log other line types found
-    other_lines = line_type[~line_type.isin(MAIN_LINE_IDENTIFIERS.keys())].unique()
-    if len(other_lines) > 0:
-        logging.info(f"Non-mainline identifiers found: {set(other_lines)}")
+    # gdf["line_code"] = np.select(conditions, choices, default="OTH")
+    
+    
+    gdf[["line", "line_code", "line_class"]] = gdf["asset_name"].apply(get_section_metadata)
     
     # Handle collection date if available in the data. Format: YYYYMMDD## where first 8 digits are the date
     if "run_id" in gdf.columns:

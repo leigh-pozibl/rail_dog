@@ -11,7 +11,9 @@ from snappy_utils.base import setup_workflow
 from snappy_utils.params import DBConnection
 
 from rail_dog.processor import Processor
+from rail_dog.report import Report
 from rail_dog.utils.io_utils import load_config_file, load_json_blob
+# from rail_dog.utils.report_utils import generate_excel_report
 
 load_dotenv()
 
@@ -60,6 +62,14 @@ def main(config, db_env, project_id, output_dir, json_input):
     pr = Processor(params, db, metadata, output_dir=process_dir)
     pr.run()
     pr.write_outputs()
+    
+    logging.info("Generating xlsx report")
+    report_dir = os.path.join(params.output_dir, "reports")
+    if not os.path.exists(report_dir):
+        os.mkdir(report_dir)
+    # generate_excel_report(db.engine, report_dir)
+    model = Report(db.engine, report_dir)
+    model.write_excel_report()
 
 
 if __name__ == "__main__":

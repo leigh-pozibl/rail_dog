@@ -7,7 +7,7 @@ import geopandas as gpd
 from sqlmodel import Session, SQLModel, select
 from sqlalchemy import inspect, text
 
-from rail_dog.schema import create_table, Asset, SAPRecord, RailSegment, RailSegmentAsset
+from rail_dog.configs.schema import create_table, Asset, SAPRecord
 from rail_dog.configs.thresholds import ASSET_WORK_ORDER_THRESHOLDS
 
 
