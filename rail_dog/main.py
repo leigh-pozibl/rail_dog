@@ -63,6 +63,10 @@ def main(config, db_env, project_id, output_dir, json_input):
     pr.run()
     pr.write_outputs()
     
+    if params.execution.process_only:
+        logging.info("Process only flag set, skipping report generation")
+        return
+    
     logging.info("Generating xlsx report")
     report_dir = os.path.join(params.output_dir, "reports")
     if not os.path.exists(report_dir):

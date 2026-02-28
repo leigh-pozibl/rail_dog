@@ -285,7 +285,7 @@ def get_section(chainage: float, line_code: str, line_class: str = "") -> list:
             if component.start_km <= chainage <= component.end_km:
                 if line_class and line_class != component.line_class:
                     continue
-                valid_sections.append((name, component.section_id))
+                valid_sections.append((name, component.section_id, component.asset_name))
     return valid_sections
 
 

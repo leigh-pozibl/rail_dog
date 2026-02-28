@@ -1,13 +1,15 @@
 import logging
+from datetime import datetime, timezone
 from typing import Type
 from collections import defaultdict
 
+import numpy as np
 import pandas as pd
 import geopandas as gpd
 from sqlmodel import Session, SQLModel, select
 from sqlalchemy import inspect, text
 
-from rail_dog.configs.schema import create_table, Asset, SAPRecord
+from rail_dog.configs.schema import create_table, Asset, SAPRecord, AggTQI, SegmentTrend
 from rail_dog.configs.thresholds import ASSET_WORK_ORDER_THRESHOLDS
 
 

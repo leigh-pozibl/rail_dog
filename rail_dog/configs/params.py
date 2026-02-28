@@ -38,7 +38,8 @@ class BaseData:
             },
     """
     collection_dates: Optional[Dict] = field(default_factory=lambda: {})
-
+    db_actions: Optional[Dict] = field(default_factory=lambda: {})  # specify whether to "replace" or "append" when posting to db
+    
     rp_raw_data: Optional[str] = None # point to a folder containing raw RP data
     tg_raw_data: Optional[str] = None # point to a folder containing raw TP data
 
@@ -186,10 +187,7 @@ class BaseParams:
 
 @dataclass
 class ExecutionParams:
-    run_steps: Optional[list] = field(default_factory=lambda: defaults.default_steps)
-    solution_graph: Optional[str | DBData] = None
-    base_graph: Optional[str | DBData] = None
-    raw_solution: Optional[dict] = None
+    process_only: Optional[bool] = False
 
 
 @dataclass
@@ -199,7 +197,7 @@ class BaseConfiguration:
     parameters: BaseParams = None
     root_path: str = None
 
-    execution: ExecutionParams = None
+    execution: ExecutionParams = field(default_factory=ExecutionParams)
 
     output_dir: str = "output"
 

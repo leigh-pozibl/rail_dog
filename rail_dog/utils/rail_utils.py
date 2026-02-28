@@ -84,6 +84,11 @@ def apply_corrections(gdf: gpd.GeoDataFrame, THOMAS_END: float, column_name_mapp
     gdf["asset_name"] = id_split[1]
 
     # Populate the line_region
+    adjusted_regions = {
+        "CBM": "Cloudbreak",
+        "De Gray": "De Grey"
+    }
+    region = adjusted_regions.get(region, region)  # Replace with adjusted name if exists, else keep original
     gdf["line_region"] = region
     invalid_regions = ~region.isin(SECTIONS)
     if invalid_regions.any():

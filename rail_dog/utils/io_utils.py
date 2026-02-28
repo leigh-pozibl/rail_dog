@@ -18,7 +18,7 @@ from snappy_utils.io import get_data_source_features, select_from_precanned_tabl
 from snappy_utils.params import Metadata, DBConnection, DBData, TABLES
 
 
-RESERVED_FIELDS = {"HEADER_ROWS", "COLLECTION_DATE"}
+RESERVED_FIELDS = {"HEADER_ROWS", "COLLECTION_DATE", "ACTION"}
 
 
 def load_config_file(file_path: str, root_path: str, metadata: Metadata, db_env: str = None):
@@ -107,30 +107,49 @@ def parse_configs_to_dataclass(
         if config.base_data.excel_files:
             xlsx_data = dict()
             collection_dates = dict()
+            db_actions = dict()
             for file, sheet_names in config.base_data.excel_files.items():
                 file_path = os.path.join(root_path, file)
                 sheets = list(n for n in sheet_names.keys() if n not in RESERVED_FIELDS)
                 num_header_rows = sheet_names.get("HEADER_ROWS", 0)
                 date_str = sheet_names.get("COLLECTION_DATE")
                 collection_date = parse_collection_date(date_str)
-
-                try:
-                    header, content = read_excel_with_header(file_path, sheets, num_header_rows)
-                    logging.info(f"Loaded file: {file_path}")
-                except Exception as e:
-                    logging.critical(f"Error loading file {file_path} {e}")
+                db_action = sheet_names.get("ACTION", "append").lower()
+                
+                ext = os.path.splitext(os.path.basename(file))[1]
+                
+                if ext in [".xlsx", ".xls"]:
+                    try:
+                        header, content = read_excel_with_header(file_path, sheets, num_header_rows)
+                        logging.info(f"Loaded file: {file_path} — sheets: {list(content.keys())}")
+                    except Exception as e:  
+                        logging.critical(f"Error loading file {file_path} {e}")
+                elif ext == ".csv":
+                    try:
+                        content = {}
+                        content[sheets[0]] = pd.read_csv(file_path)
+                        header = None
+                        logging.info(f"Loaded csv file: {file_path} into sheet named {sheets[0]}")
+                    except Exception as e:  
+                        logging.critical(f"Error loading file {file_path} {e}")
 
                 for sheet_name, sheet_alias in sheet_names.items():
                     if sheet_name in RESERVED_FIELDS:
+                        continue
+                    if sheet_name not in content:
+                        logging.warning(f"Sheet '{sheet_name}' not found in {file_path} — skipping")
                         continue
                     xlsx_data[sheet_alias] = content.pop(sheet_name)
                     if header is not None:
                         xlsx_data[f"{sheet_alias}-HEADER"] = header.pop(sheet_name)
                     if collection_date is not None:    
                         collection_dates[sheet_alias] = collection_date
+                    if db_action is not None:    
+                        db_actions[sheet_alias] = db_action
 
                 config.base_data.update_dict("track_data", xlsx_data)
                 config.base_data.update_dict("collection_dates", collection_dates)
+                config.base_data.update_dict("db_actions", db_actions)
                 
                 # write the sheets to csv
                 output_dir = os.path.join(os.path.dirname(file_path), "..", "processed")
@@ -184,7 +203,7 @@ def parse_configs_to_dataclass(
             tables = set()
             if config.base_data.rp_raw_data:
                 con.execute("DROP TABLE IF EXISTS rp_data")
-                con.execute(f"""CREATE TABLE rp_data AS SELECT * FROM read_csv_auto('{config.base_data.rp_raw_data}/*.csv')""")
+                con.execute(f"""CREATE TABLE rp_data AS SELECT * FROM read_csv_auto('{config.base_data.rp_raw_data}/*_RP.csv')""")
                 results = con.execute("SELECT COUNT(*) FROM rp_data").fetchone()
                 if results:
                     logging.info(f"Loaded {results[0]} rp_raw_data records")
@@ -194,7 +213,7 @@ def parse_configs_to_dataclass(
 
             if config.base_data.tg_raw_data:
                 con.execute("DROP TABLE IF EXISTS tg_data")
-                con.execute(f"""CREATE TABLE tg_data AS SELECT * FROM read_csv_auto('{config.base_data.tg_raw_data}/*.csv')""")
+                con.execute(f"""CREATE TABLE tg_data AS SELECT * FROM read_csv_auto('{config.base_data.tg_raw_data}/*_TG.csv')""")
                 results = con.execute("SELECT COUNT(*) FROM tg_data").fetchone()
                 if results:
                     logging.info(f"Loaded {results[0]} tg_raw_data records")

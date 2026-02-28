@@ -8,7 +8,7 @@ from openpyxl.utils import get_column_letter
 from sqlalchemy import Engine
 
 from rail_dog.utils.db_utils import get_table_data
-from rail_dog.configs.thresholds import PLAINLINE_TREATMENT_THRESHOLDS, LX_TREATMENT_THRESHOLDS, IRJ_TREATMENT_THRESHOLDS, TURNOUT_TREATMENT_THRESHOLDS, BRIDGE_TREATMENT_THRESHOLDS
+from rail_dog.configs.thresholds import PLAINLINE_TREATMENT_THRESHOLDS, LX_TREATMENT_THRESHOLDS, IRJ_TREATMENT_THRESHOLDS, TURNOUT_TREATMENT_THRESHOLDS, BRIDGE_TREATMENT_THRESHOLDS, PRIORITY_THRESHOLDS
 
 
 class RuleEngine:
@@ -284,6 +284,8 @@ class Report():
         self.output_path = output_path
         
         self.export_data = {}
+        
+        self.cols_list = list()  # Will be set after merging data, used for column letter lookups in formulas
         
         self.generate_report()
     
@@ -865,10 +867,7 @@ class Report():
 
         return result
 
-    def generate_report(self):
-        self.get_report_data()
-    
-    def get_report_data(
+    def generate_report(
         self,
         line_codes: Optional[List[str]] = None
     ):
@@ -899,7 +898,8 @@ class Report():
 
         # Remove id and created_at from agg tables
         self.export_data["agg_asset"] = agg_asset_df.drop(columns=['id', 'created_at'], errors='ignore')
-        self.export_data["agg_gbfi"] = agg_gbfi_df.drop(columns=['id', 'collection_date', 'created_at'], errors='ignore')
+        # Also drop ballast_centre/ballast_lt_250mm - these should only come from agg_ballast
+        self.export_data["agg_gbfi"] = agg_gbfi_df.drop(columns=['id', 'collection_date', 'created_at', 'ballast_centre', 'ballast_lt_250mm'], errors='ignore')
         self.export_data["agg_ballast"] = agg_ballast_df.drop(columns=['id', 'collection_date', 'created_at'], errors='ignore')
         self.export_data["agg_tsr"] = agg_tsr_df.drop(columns=['id', 'created_at'], errors='ignore')
         self.export_data["agg_tqi"] = agg_tqi_df.drop(columns=['id', 'collection_date', 'created_at'], errors='ignore')
@@ -1009,6 +1009,22 @@ class Report():
         #     segments_df
         # )
         recommendations_df['problem_zone_length_m'] = None  # Will be replaced with Excel formula
+
+        # Priority scoring columns - will be replaced with Excel formulas
+        recommendations_df['priority_tsr'] = None
+        recommendations_df['priority_dtf'] = None
+        recommendations_df['priority_tqi_status'] = None
+        recommendations_df['priority_tqi_trend'] = None
+        recommendations_df['priority_speed'] = None
+        recommendations_df['priority_curve'] = None
+        recommendations_df['priority_score'] = None
+        recommendations_df['priority_dtf_getting_worse'] = None
+        recommendations_df['priority_fixed_asset'] = None
+        recommendations_df['priority_lx_score'] = None
+        recommendations_df['priority_irj_score'] = None
+        recommendations_df['priority_turnout_score'] = None
+        recommendations_df['priority_bridge_score'] = None
+        recommendations_df['priority_fixed_asset_max'] = None
 
         self.export_data["recommendations"] = recommendations_df
 
@@ -1175,6 +1191,15 @@ class Report():
                 'Description': self._get_threshold_description(key)
             })
 
+        # Priority thresholds
+        for key, value in PRIORITY_THRESHOLDS.items():
+            thresholds_data.append({
+                'Treatment Type': 'Priority',
+                'Threshold Name': key,
+                'Value': value,
+                'Description': self._get_threshold_description(key)
+            })
+
         # Create DataFrame and write to Excel
         thresholds_df = pd.DataFrame(thresholds_data)
         thresholds_df.to_excel(writer, sheet_name='Thresholds', index=False)
@@ -1197,6 +1222,12 @@ class Report():
 
         logging.info("Written Thresholds tab")
 
+    def _get_col_letter(self, col_name: str) -> Optional[str]:
+        # Helper to get column letter from column name
+        if col_name not in self.cols_list:
+            return None
+        return get_column_letter(self.cols_list.index(col_name) + 1)
+        
     def _get_threshold_description(self, threshold_name: str) -> str:
         """Get human-readable description for threshold names."""
         descriptions = {
@@ -1213,9 +1244,313 @@ class Report():
             'turnout_renewal_ballast_depth_threshold': 'Ballast depth threshold for turnout renewal (m)',
             'bridge_renewal_ballast_depth_threshold': 'Ballast depth threshold for bridge renewal (m)',
             'bridge_renewal_gbfi_avg_threshold': 'GBFI avg threshold for bridge renewal',
+            'priority_weight_tsr': 'Priority weight for TSR score',
+            'priority_weight_dtf': 'Priority weight for DTF score',
+            'priority_weight_tqi_status': 'Priority weight for TQI status score',
+            'priority_weight_tqi_trend': 'Priority weight for TQI trend score',
+            'priority_weight_speed': 'Priority weight for max speed score',
+            'priority_weight_curve': 'Priority weight for curve type score',
+            'priority_norm_tsr': 'Priority normalization for TSR (max score)',
+            'priority_norm_dtf': 'Priority normalization for DTF (max score)',
+            'priority_norm_tqi_status': 'Priority normalization for TQI status (max score)',
+            'priority_norm_tqi_trend': 'Priority normalization for TQI trend (max score)',
+            'priority_norm_speed': 'Priority normalization for max speed (max score)',
+            'priority_norm_curve': 'Priority normalization for curve type (max score)',
+            'priority_speed_low': 'Speed threshold low (below = 0)',
+            'priority_speed_high': 'Speed threshold high (above = 2)',
+            'priority_speed_min': 'Speed threshold min for mid-range check',
+            'priority_speed_mid': 'Speed threshold mid for mid-range check',
+            'priority_lx_weight_fixed_asset': 'LX priority weight for fixed asset score',
+            'priority_lx_weight_tsr': 'LX priority weight for TSR score',
+            'priority_lx_weight_dtf': 'LX priority weight for DTF score',
+            'priority_lx_weight_dtf_worse': 'LX priority weight for DTF getting worse score',
+            'priority_lx_weight_speed': 'LX priority weight for max speed score',
+            'priority_lx_norm_fixed_asset': 'LX priority normalization for fixed asset (max score)',
+            'priority_lx_norm_tsr': 'LX priority normalization for TSR (max score)',
+            'priority_lx_norm_dtf': 'LX priority normalization for DTF (max score)',
+            'priority_lx_norm_dtf_worse': 'LX priority normalization for DTF getting worse (max score)',
+            'priority_lx_norm_speed': 'LX priority normalization for max speed (max score)',
         }
         return descriptions.get(threshold_name, '')
 
+    def _add_treatment_formula_columns(self, worksheet, merged: pd.DataFrame):
+        """
+        TEMP: Add Excel formulas to *_treatment_formula columns that reference Thresholds tab.
+        These formulas should produce the same results as the model columns for troubleshooting.
+
+        Args:
+            worksheet: openpyxl worksheet object
+            merged: DataFrame with all merged data
+        """
+
+        # Helper to create threshold reference formula
+        def th(threshold_name):
+            """Create INDEX/MATCH formula to look up threshold from Thresholds tab"""
+            return f'INDEX(Thresholds!$C:$C,MATCH("{threshold_name}",Thresholds!$B:$B,0))'
+
+        # Get column letters for data fields
+        fixed_asset = self._get_col_letter('fixed_asset')
+        status = self._get_col_letter('status')  # TQI status
+        max_of_avg = self._get_col_letter('max_of_avg')  # GBFI max_of_avg
+        avg_of_avg = self._get_col_letter('avg_of_avg')  # GBFI avg_of_avg
+        ballast_centre = self._get_col_letter('ballast_centre')
+        worst_dtf = self._get_col_letter('worst_dtf')  # DTR worst_dtf
+        complete_tsr = self._get_col_letter('complete_tsr')
+        wz_level_crossing = self._get_col_letter('wz_level_crossing')
+        level_crossing = self._get_col_letter('level_crossing')
+        irj = self._get_col_letter('irj')
+        wz_turnout = self._get_col_letter('wz_turnout')
+        wz_bridge = self._get_col_letter('wz_bridge')
+
+        # Get formula column letters
+        plainline_formula_col = self._get_col_letter('plainline_treatment_formula')
+        lx_formula_col = self._get_col_letter('lx_treatment_formula')
+        irj_formula_col = self._get_col_letter('irj_treatment_formula')
+        turnout_formula_col = self._get_col_letter('turnout_treatment_formula')
+        bridge_formula_col = self._get_col_letter('bridge_treatment_formula')
+
+        # Write formulas for each row (starting at row 3: row 1 = merged header, row 2 = column names)
+        for row_num in range(3, len(merged) + 3):
+            # Plainline treatment formula
+            if plainline_formula_col and fixed_asset and status and max_of_avg and avg_of_avg and ballast_centre and worst_dtf and complete_tsr:
+                plainline_formula = (
+                    f'=IF({fixed_asset}{row_num}=TRUE,"No Treatment",'
+                    f'IF(AND(OR({status}{row_num}="poor",{status}{row_num}="critical"),{max_of_avg}{row_num}>={th("gbfi_bog_threshold_1")}),"Local Formation Renewal (Bog Hole)",'
+                    f'IF(AND({max_of_avg}{row_num}>={th("gbfi_bog_threshold_2")},OR({worst_dtf}{row_num}="s1",{worst_dtf}{row_num}="s2"),{complete_tsr}{row_num}=TRUE),"Local Formation Renewal (Bog Hole)",'
+                    f'IF(AND(OR({status}{row_num}="poor",{status}{row_num}="critical"),{avg_of_avg}{row_num}>={th("ballast_clean_threshold")}),"Ballast Clean",'
+                    f'IF(AND(OR({status}{row_num}="poor",{status}{row_num}="critical"),{avg_of_avg}{row_num}<{th("lift_tamp_gbfi_avg_threshold")},{ballast_centre}{row_num}<{th("lift_tamp_ballast_depth_threshold")}),"Lift & Tamp",'
+                    f'IF(AND(OR({status}{row_num}="poor",{status}{row_num}="critical"),{avg_of_avg}{row_num}<{th("tamp_only_gbfi_avg_threshold")},{ballast_centre}{row_num}>={th("tamp_only_ballast_depth_threshold")}),"Tamp Only",'
+                    f'"No Treatment"))))))'
+                )
+                worksheet[f'{plainline_formula_col}{row_num}'] = plainline_formula
+
+            # LX treatment formula
+            if lx_formula_col and fixed_asset and wz_level_crossing and complete_tsr and status and max_of_avg and avg_of_avg and worst_dtf and ballast_centre and level_crossing:
+                lx_formula = (
+                    f'=IF({fixed_asset}{row_num}=FALSE,"No Treatment",'
+                    f'IF(AND({wz_level_crossing}{row_num}>0,{complete_tsr}{row_num}=TRUE,OR({status}{row_num}="poor",{status}{row_num}="critical"),OR({max_of_avg}{row_num}>{th("lx_renewal_gbfi_max_threshold")},{avg_of_avg}{row_num}>{th("lx_renewal_gbfi_avg_threshold")})),{wz_level_crossing}{row_num},'
+                    f'IF(AND(OR({status}{row_num}="poor",{status}{row_num}="critical"),OR({worst_dtf}{row_num}="s1",{worst_dtf}{row_num}="s2",{worst_dtf}{row_num}="s3"),{avg_of_avg}{row_num}>{th("tamp_only_gbfi_avg_threshold")},{ballast_centre}{row_num}>={th("tamp_only_ballast_depth_threshold")},{level_crossing}{row_num}>0),"Tamp Only",'
+                    f'"No Treatment")))'
+                )
+                worksheet[f'{lx_formula_col}{row_num}'] = lx_formula
+
+            # IRJ treatment formula
+            if irj_formula_col and fixed_asset and max_of_avg and status and worst_dtf and irj and ballast_centre and avg_of_avg:
+                irj_formula = (
+                    f'=IF({fixed_asset}{row_num}=FALSE,"No Treatment",'
+                    f'IF(AND({max_of_avg}{row_num}>{th("irj_renewal_gbfi_max_threshold")},OR({status}{row_num}="critical",{status}{row_num}="poor"),OR({worst_dtf}{row_num}="s1",{worst_dtf}{row_num}="s2"),{irj}{row_num}>0),{irj}{row_num},'
+                    f'IF(AND(OR({status}{row_num}="critical",{status}{row_num}="poor"),OR({worst_dtf}{row_num}="s1",{worst_dtf}{row_num}="s2",{worst_dtf}{row_num}="s3"),{ballast_centre}{row_num}>={th("tamp_only_ballast_depth_threshold")},{irj}{row_num}>0,{avg_of_avg}{row_num}>{th("tamp_only_gbfi_avg_threshold")}),"Tamp Only",'
+                    f'"No Treatment")))'
+                )
+                worksheet[f'{irj_formula_col}{row_num}'] = irj_formula
+
+            # Turnout treatment formula
+            if turnout_formula_col and fixed_asset and ballast_centre and worst_dtf and complete_tsr and wz_turnout and status and avg_of_avg:
+                turnout_formula = (
+                    f'=IF({fixed_asset}{row_num}=FALSE,"No Treatment",'
+                    f'IF(AND({ballast_centre}{row_num}>={th("turnout_renewal_ballast_depth_threshold")},OR({worst_dtf}{row_num}="s1",{worst_dtf}{row_num}="s2",{worst_dtf}{row_num}="s3"),{complete_tsr}{row_num}=TRUE,{wz_turnout}{row_num}>0),{wz_turnout}{row_num},'
+                    f'IF(AND(OR({status}{row_num}="poor",{status}{row_num}="critical"),{ballast_centre}{row_num}>={th("tamp_only_ballast_depth_threshold")},OR({worst_dtf}{row_num}="s1",{worst_dtf}{row_num}="s2",{worst_dtf}{row_num}="s3"),{avg_of_avg}{row_num}>{th("tamp_only_gbfi_avg_threshold")}),"Tamp Only",'
+                    f'"No Treatment")))'
+                )
+                worksheet[f'{turnout_formula_col}{row_num}'] = turnout_formula
+
+            # Bridge treatment formula
+            if bridge_formula_col and fixed_asset and ballast_centre and worst_dtf and avg_of_avg and complete_tsr and wz_bridge and status:
+                bridge_formula = (
+                    f'=IF({fixed_asset}{row_num}=FALSE,"No Treatment",'
+                    f'IF(AND({ballast_centre}{row_num}>={th("bridge_renewal_ballast_depth_threshold")},OR({worst_dtf}{row_num}="s1",{worst_dtf}{row_num}="s2"),{avg_of_avg}{row_num}>{th("bridge_renewal_gbfi_avg_threshold")},{complete_tsr}{row_num}=TRUE,{wz_bridge}{row_num}>0),{wz_bridge}{row_num},'
+                    f'IF(AND(OR({status}{row_num}="poor",{status}{row_num}="critical"),{ballast_centre}{row_num}>={th("tamp_only_ballast_depth_threshold")},OR({worst_dtf}{row_num}="s1",{worst_dtf}{row_num}="s2",{worst_dtf}{row_num}="s3"),{avg_of_avg}{row_num}>{th("tamp_only_gbfi_avg_threshold")}),"Tamp Only",'
+                    f'"No Treatment")))'
+                )
+                worksheet[f'{bridge_formula_col}{row_num}'] = bridge_formula
+
+        logging.info("Added treatment formula columns referencing Thresholds tab")
+
+    def _add_priority_columns(self, worksheet, merged: pd.DataFrame):
+        """
+        TEMP: Add Excel formulas to calculate priority based on treatment recommendations.
+
+        Adds 6 numeric encoding columns (priority_tsr, priority_dtf, priority_tqi_status,
+        priority_tqi_trend, priority_speed, priority_curve) and 1 aggregated weighted score column.
+
+        Args:
+            worksheet: openpyxl worksheet object
+            merged: DataFrame with all merged data
+            cols_list: List of column names in order
+        """
+        # Helper to create threshold reference formula
+        def th(threshold_name):
+            return f'INDEX(Thresholds!$C:$C,MATCH("{threshold_name}",Thresholds!$B:$B,0))'
+
+        # Get column letters for source data fields
+        complete_tsr = self._get_col_letter('complete_tsr')
+        worst_dtf = self._get_col_letter('worst_dtf')
+        tqi_status = self._get_col_letter('status')
+        tqi_trend = self._get_col_letter('trend')
+        max_speed = self._get_col_letter('max_speed')
+        curve_type = self._get_col_letter('curve_type')
+        plainline_final = self._get_col_letter('plainline_treatment_final')
+
+        # Get column letters for priority output columns
+        p_tsr = self._get_col_letter('priority_tsr')
+        p_dtf = self._get_col_letter('priority_dtf')
+        p_tqi_status = self._get_col_letter('priority_tqi_status')
+        p_tqi_trend = self._get_col_letter('priority_tqi_trend')
+        p_speed = self._get_col_letter('priority_speed')
+        p_curve = self._get_col_letter('priority_curve')
+        p_score = self._get_col_letter('priority_score')
+
+        if not all([complete_tsr, worst_dtf, tqi_status, tqi_trend, max_speed, curve_type,
+                    plainline_final, p_tsr, p_dtf, p_tqi_status, p_tqi_trend, p_speed, p_curve, p_score]):
+            logging.warning("Missing columns for priority formulas, skipping")
+            return
+
+        for row_num in range(3, len(merged) + 3):
+            r = row_num
+
+            # priority_tsr: No=0, else 1
+            worksheet[f'{p_tsr}{r}'] = (
+                f'=IF({complete_tsr}{r}="No",0,1)'
+            )
+
+            # priority_dtf: N/A or S3=0, S2=1, S1=2
+            worksheet[f'{p_dtf}{r}'] = (
+                f'=IFS(OR({worst_dtf}{r}="N/A",{worst_dtf}{r}="S3"),0,'
+                f'{worst_dtf}{r}="S2",1,'
+                f'{worst_dtf}{r}="S1",2)'
+            )
+
+            # priority_tqi_status: good/satisfactory=0, poor=1, critical=2
+            worksheet[f'{p_tqi_status}{r}'] = (
+                f'=IFS(OR({tqi_status}{r}="good",{tqi_status}{r}="satisfactory"),0,'
+                f'{tqi_status}{r}="poor",1,'
+                f'{tqi_status}{r}="critical",2)'
+            )
+
+            # priority_tqi_trend: blank/recent tamp=0, stable=1, degrading=2, repetition=3
+            worksheet[f'{p_tqi_trend}{r}'] = (
+                f'=IFS(OR({tqi_trend}{r}="",{tqi_trend}{r}="recent tamp"),0,'
+                f'{tqi_trend}{r}="stable",1,'
+                f'{tqi_trend}{r}="degrading",2,'
+                f'{tqi_trend}{r}="repetition",3)'
+            )
+
+            # priority_speed: threshold-based scoring
+            worksheet[f'{p_speed}{r}'] = (
+                f'=IFS({max_speed}{r}="",0,'
+                f'{max_speed}{r}<{th("priority_speed_low")},0,'
+                f'{max_speed}{r}<{th("priority_speed_high")},1,'
+                f'({max_speed}{r}>={th("priority_speed_min")})*({max_speed}{r}<{th("priority_speed_mid")}),1,'
+                f'{max_speed}{r}>={th("priority_speed_mid")},2)'
+            )
+
+            # priority_curve: tangent=0, mild curve=1, sharp curve=2
+            worksheet[f'{p_curve}{r}'] = (
+                f'=IFS({curve_type}{r}="tangent",0,'
+                f'{curve_type}{r}="mild curve",1,'
+                f'{curve_type}{r}="sharp curve",2)'
+            )
+
+            # Aggregated priority score: weighted normalized sum, 0 if no treatment
+            worksheet[f'{p_score}{r}'] = (
+                f'=IF({plainline_final}{r}<>"No Treatment",'
+                f'({p_tsr}{r}/{th("priority_norm_tsr")})*{th("priority_weight_tsr")}+'
+                f'({p_dtf}{r}/{th("priority_norm_dtf")})*{th("priority_weight_dtf")}+'
+                f'({p_tqi_status}{r}/{th("priority_norm_tqi_status")})*{th("priority_weight_tqi_status")}+'
+                f'({p_tqi_trend}{r}/{th("priority_norm_tqi_trend")})*{th("priority_weight_tqi_trend")}+'
+                f'({p_speed}{r}/{th("priority_norm_speed")})*{th("priority_weight_speed")}+'
+                f'({p_curve}{r}/{th("priority_norm_curve")})*{th("priority_weight_curve")},'
+                f'0)'
+            )
+
+        # Get column letters for additional source data fields
+        getting_worse = self._get_col_letter('getting_worse')
+        fixed_asset = self._get_col_letter('fixed_asset')
+        lx_final = self._get_col_letter('lx_treatment_final')
+        irj_final = self._get_col_letter('irj_treatment_final')
+        turnout_final = self._get_col_letter('turnout_treatment_final')
+        bridge_final = self._get_col_letter('bridge_treatment_final')
+
+        # Get column letters for additional priority output columns
+        p_dtf_worse = self._get_col_letter('priority_dtf_getting_worse')
+        p_fixed_asset = self._get_col_letter('priority_fixed_asset')
+        p_lx_score = self._get_col_letter('priority_lx_score')
+        p_irj_score = self._get_col_letter('priority_irj_score')
+        p_turnout_score = self._get_col_letter('priority_turnout_score')
+        p_bridge_score = self._get_col_letter('priority_bridge_score')
+        p_fixed_asset_max = self._get_col_letter('priority_fixed_asset_max')
+
+        if not all([getting_worse, fixed_asset, lx_final, irj_final, turnout_final, bridge_final,
+                    p_dtf_worse, p_fixed_asset, p_lx_score, p_irj_score, p_turnout_score, p_bridge_score,
+                    p_fixed_asset_max]):
+            logging.warning("Missing columns for fixed asset priority formulas, skipping")
+            logging.info("Added priority formula columns (plainline only)")
+            return
+
+        for row_num in range(3, len(merged) + 3):
+            r = row_num
+
+            # priority_dtf_getting_worse: 1 if getting_worse > 0, else 0
+            worksheet[f'{p_dtf_worse}{r}'] = (
+                f'=IF({getting_worse}{r}>0,1,0)'
+            )
+
+            # priority_fixed_asset: 1 if fixed_asset is TRUE, else 0
+            worksheet[f'{p_fixed_asset}{r}'] = (
+                f'=IF({fixed_asset}{r}=TRUE,1,0)'
+            )
+
+            # priority_lx_score: weighted normalized sum, 0 if lx treatment is "No Treatment"
+            worksheet[f'{p_lx_score}{r}'] = (
+                f'=IF({lx_final}{r}<>"No Treatment",'
+                f'({p_fixed_asset}{r}/{th("priority_lx_norm_fixed_asset")})*{th("priority_lx_weight_fixed_asset")}+'
+                f'({p_tsr}{r}/{th("priority_lx_norm_tsr")})*{th("priority_lx_weight_tsr")}+'
+                f'({p_dtf}{r}/{th("priority_lx_norm_dtf")})*{th("priority_lx_weight_dtf")}+'
+                f'({p_dtf_worse}{r}/{th("priority_lx_norm_dtf_worse")})*{th("priority_lx_weight_dtf_worse")}+'
+                f'({p_speed}{r}/{th("priority_lx_norm_speed")})*{th("priority_lx_weight_speed")},'
+                f'0)'
+            )
+
+            # priority_irj_score: weighted normalized sum, 0 if irj treatment is "No Treatment"
+            worksheet[f'{p_irj_score}{r}'] = (
+                f'=IF({irj_final}{r}<>"No Treatment",'
+                f'({p_dtf_worse}{r}/{th("priority_lx_norm_dtf_worse")})*{th("priority_lx_weight_dtf_worse")}+'
+                f'({p_tsr}{r}/{th("priority_lx_norm_tsr")})*{th("priority_lx_weight_tsr")}+'
+                f'({p_dtf}{r}/{th("priority_lx_norm_dtf")})*{th("priority_lx_weight_dtf")}+'
+                f'({p_fixed_asset}{r}/{th("priority_lx_norm_fixed_asset")})*{th("priority_lx_weight_fixed_asset")}+'
+                f'({p_speed}{r}/{th("priority_lx_norm_speed")})*{th("priority_lx_weight_speed")},'
+                f'0)'
+            )
+
+            # priority_turnout_score: weighted normalized sum, 0 if turnout treatment is "No Treatment"
+            worksheet[f'{p_turnout_score}{r}'] = (
+                f'=IF({turnout_final}{r}<>"No Treatment",'
+                f'({p_dtf_worse}{r}/{th("priority_lx_norm_dtf_worse")})*{th("priority_lx_weight_dtf_worse")}+'
+                f'({p_tsr}{r}/{th("priority_lx_norm_tsr")})*{th("priority_lx_weight_tsr")}+'
+                f'({p_dtf}{r}/{th("priority_lx_norm_dtf")})*{th("priority_lx_weight_dtf")}+'
+                f'({p_fixed_asset}{r}/{th("priority_lx_norm_fixed_asset")})*{th("priority_lx_weight_fixed_asset")}+'
+                f'({p_speed}{r}/{th("priority_lx_norm_speed")})*{th("priority_lx_weight_speed")},'
+                f'0)'
+            )
+
+            # priority_bridge_score: weighted normalized sum, 0 if bridge treatment is "No Treatment"
+            worksheet[f'{p_bridge_score}{r}'] = (
+                f'=IF({bridge_final}{r}<>"No Treatment",'
+                f'({p_dtf_worse}{r}/{th("priority_lx_norm_dtf_worse")})*{th("priority_lx_weight_dtf_worse")}+'
+                f'({p_tsr}{r}/{th("priority_lx_norm_tsr")})*{th("priority_lx_weight_tsr")}+'
+                f'({p_dtf}{r}/{th("priority_lx_norm_dtf")})*{th("priority_lx_weight_dtf")}+'
+                f'({p_fixed_asset}{r}/{th("priority_lx_norm_fixed_asset")})*{th("priority_lx_weight_fixed_asset")}+'
+                f'({p_speed}{r}/{th("priority_lx_norm_speed")})*{th("priority_lx_weight_speed")},'
+                f'0)'
+            )
+
+            # priority_fixed_asset_max: max of lx, irj, turnout, bridge scores
+            worksheet[f'{p_fixed_asset_max}{r}'] = (
+                f'=MAX({p_lx_score}{r},{p_irj_score}{r},{p_turnout_score}{r},{p_bridge_score}{r})'
+            )
+
+        logging.info("Added priority formula columns")
+        
     def write_excel_report(self):
         """
         Generate an Excel workbook with one tab per line_code, joining all aggregated tables.
@@ -1315,6 +1650,11 @@ class Report():
                     dtr_cols = [col for col in merged.columns if col not in before_cols]
 
                 recommendation_cols = []
+                plainline_priority_col_names = {'priority_tsr', 'priority_dtf', 'priority_tqi_status',
+                                               'priority_tqi_trend', 'priority_speed', 'priority_curve', 'priority_score'}
+                fixed_asset_priority_col_names = {'priority_dtf_getting_worse', 'priority_fixed_asset', 'priority_lx_score',
+                                                   'priority_irj_score', 'priority_turnout_score', 'priority_bridge_score',
+                                                   'priority_fixed_asset_max'}
                 if "recommendations" in self.export_data and not self.export_data["recommendations"].empty:
                     before_cols = set(merged.columns)
                     merged = merged.merge(
@@ -1323,7 +1663,11 @@ class Report():
                         how='left',
                         suffixes=('', '_rec')
                     )
-                    recommendation_cols = [col for col in merged.columns if col not in before_cols]
+                    all_priority_col_names = plainline_priority_col_names | fixed_asset_priority_col_names
+                    new_cols = [col for col in merged.columns if col not in before_cols]
+                    recommendation_cols = [col for col in new_cols if col not in all_priority_col_names]
+                    plainline_priority_cols = [col for col in new_cols if col in plainline_priority_col_names]
+                    fixed_asset_priority_cols = [col for col in new_cols if col in fixed_asset_priority_col_names]
 
                 # Sort by chainage_start_km
                 merged = merged.sort_values('chainage_start_km')
@@ -1379,19 +1723,29 @@ class Report():
                 if recommendation_cols:
                     end_col = start_col + len(recommendation_cols) - 1
                     col_groups.append(('Recommendations', start_col, end_col))
+                    start_col = end_col + 1
+
+                if plainline_priority_cols:
+                    end_col = start_col + len(plainline_priority_cols) - 1
+                    col_groups.append(('Plainline Prioritisation', start_col, end_col))
+                    start_col = end_col + 1
+
+                if fixed_asset_priority_cols:
+                    end_col = start_col + len(fixed_asset_priority_cols) - 1
+                    col_groups.append(('Fixed Asset Prioritisation', start_col, end_col))
 
                 add_merged_header_row(worksheet, col_groups)
 
                 # Add Excel formulas to treatment final columns
-                cols_list = list(merged.columns)
+                self.cols_list = list(merged.columns)
 
                 # Helper function to add formulas for a treatment type
                 def add_treatment_formulas(model_col, override_col, final_col):
                     if model_col in merged.columns and override_col in merged.columns and final_col in merged.columns:
                         # Find column indices (1-indexed for Excel)
-                        model_col_idx = cols_list.index(model_col) + 1
-                        override_col_idx = cols_list.index(override_col) + 1
-                        final_col_idx = cols_list.index(final_col) + 1
+                        model_col_idx = self.cols_list.index(model_col) + 1
+                        override_col_idx = self.cols_list.index(override_col) + 1
+                        final_col_idx = self.cols_list.index(final_col) + 1
 
                         # Convert to Excel column letters
                         model_col_letter = get_column_letter(model_col_idx)
@@ -1419,18 +1773,18 @@ class Report():
                 add_treatment_formulas('bridge_treatment_model', 'bridge_treatment_override', 'bridge_treatment_final')
 
                 # TEMP: Add formula columns that reference Thresholds tab for troubleshooting
-                self._add_treatment_formula_columns(worksheet, merged, cols_list)
+                self._add_treatment_formula_columns(worksheet, merged)
 
                 # Add formulas for problem_zone, problem_zone_group, problem_zone_length_m
                 if all(col in merged.columns for col in ['plainline_treatment_final', 'lx_treatment_final', 'irj_treatment_final', 'turnout_treatment_final', 'bridge_treatment_final', 'problem_zone', 'problem_zone_group', 'problem_zone_length_m']):
-                    plainline_idx = cols_list.index('plainline_treatment_final') + 1
-                    lx_idx = cols_list.index('lx_treatment_final') + 1
-                    irj_idx = cols_list.index('irj_treatment_final') + 1
-                    turnout_idx = cols_list.index('turnout_treatment_final') + 1
-                    bridge_idx = cols_list.index('bridge_treatment_final') + 1
-                    problem_zone_idx = cols_list.index('problem_zone') + 1
-                    problem_zone_group_idx = cols_list.index('problem_zone_group') + 1
-                    problem_zone_length_idx = cols_list.index('problem_zone_length_m') + 1
+                    plainline_idx = self.cols_list.index('plainline_treatment_final') + 1
+                    lx_idx = self.cols_list.index('lx_treatment_final') + 1
+                    irj_idx = self.cols_list.index('irj_treatment_final') + 1
+                    turnout_idx = self.cols_list.index('turnout_treatment_final') + 1
+                    bridge_idx = self.cols_list.index('bridge_treatment_final') + 1
+                    problem_zone_idx = self.cols_list.index('problem_zone') + 1
+                    problem_zone_group_idx = self.cols_list.index('problem_zone_group') + 1
+                    problem_zone_length_idx = self.cols_list.index('problem_zone_length_m') + 1
 
                     # Get column letters
                     plainline_letter = get_column_letter(plainline_idx)
@@ -1446,8 +1800,8 @@ class Report():
                     chainage_start_letter = None
                     chainage_end_letter = None
                     if 'chainage_start_km' in merged.columns and 'chainage_end_km' in merged.columns:
-                        chainage_start_idx = cols_list.index('chainage_start_km') + 1
-                        chainage_end_idx = cols_list.index('chainage_end_km') + 1
+                        chainage_start_idx = self.cols_list.index('chainage_start_km') + 1
+                        chainage_end_idx = self.cols_list.index('chainage_end_km') + 1
                         chainage_start_letter = get_column_letter(chainage_start_idx)
                         chainage_end_letter = get_column_letter(chainage_end_idx)
 
@@ -1471,6 +1825,20 @@ class Report():
                             problem_zone_length_formula = f'=IF({problem_zone_letter}{row_num}=0,"",SUMPRODUCT((${problem_zone_group_letter}$3:${problem_zone_group_letter}${last_row}={problem_zone_group_letter}{row_num})*(${chainage_end_letter}$3:${chainage_end_letter}${last_row}-${chainage_start_letter}$3:${chainage_start_letter}${last_row})*1000))'
                             worksheet[f'{problem_zone_length_letter}{row_num}'] = problem_zone_length_formula
 
+
+                # Add priority scoring columns
+                self._add_priority_columns(worksheet, merged)
+
+                # Add autofilter on row 2 (column headers)
+                last_col_letter = get_column_letter(len(merged.columns))
+                last_row = len(merged) + 2  # +2 for header rows
+                worksheet.auto_filter.ref = f"A2:{last_col_letter}{last_row}"
+
+                # Set column A width wider (for chainage_id)
+                worksheet.column_dimensions['A'].width = 35
+
+                # Freeze panes at B3 (freezes row 1-2 and column A)
+                worksheet.freeze_panes = 'B3'
 
                 logging.info(f"  Written {len(merged)} rows to sheet '{sheet_name}'")
 
@@ -1506,6 +1874,8 @@ def add_merged_header_row(worksheet, col_groups: list):
             'Track Quality Indicator (TQI)': 'F4B084',      # Light coral
             'Dynamic Track Force (DTR)': 'E4DFEC',      # Light purple
             'Recommendations': 'D5F4E6',      # Light mint green
+            'Plainline Prioritisation': 'FFD6E8',   # Light pink
+            'Fixed Asset Prioritisation': 'FADBD8', # Light salmon
         }
         if source_name in colors:
             cell.fill = PatternFill(start_color=colors[source_name],

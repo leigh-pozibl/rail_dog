@@ -28,12 +28,13 @@ from rail_dog.utils.rail_utils import apply_corrections
 from rail_dog.utils.report_utils import generate_excel_report, generate_powerbi_export, generate_condition_summary
 from rail_dog.configs.params import BaseConfiguration
 from rail_dog.configs.schema import (
-    Asset, AggAsset, RailSegment, SAPRecord, RailSegmentAsset, RailSection, GBFIRecord, gbfi_column_mapping,
-    ballast_column_mapping, AggGBFI, TSRRecord, AggTSR, TGRecord, TQIRecord, AggTQI, DTRRecord, AggDTR,
+    Asset, AggAsset, RailSegment, SAPRecord, sap_column_mapping, RailSegmentAsset, RailSection, GBFIRecord, gbfi_column_mapping,
+    ballast_column_mapping, AggGBFI, TSRRecord, AggTSR, TGRecord, AggTG, TQIRecord, AggTQI, DTRRecord, AggDTR,
     BallastRecord, AggBallast
 )
 from rail_dog.configs.thresholds import RAIL_DEGRADATION_THRESHOLDS, GBFI_FOULED_THRESHOLDS, TQI_THRESHOLDS
 from rail_dog.configs.library import get_station, get_section, get_section_metadata
+from rail_dog.utils.trend_utils import compute_all_trends, update_tqi_trends
 
 
 class Processor():
@@ -252,8 +253,10 @@ class Processor():
             if collection_date is None:
                 logging.error("Must specify a collection date for the TQI dataset being loaded.")
                 return
-            self.process_tqi_data(collection_date)
-            self.aggregate_tqi_to_segments(collection_date, line_class='main')
+            db_action = self.data.db_actions.get("TQI")
+            self.process_tqi_data(collection_date, db_action)
+            self.aggregate_tqi_to_segments(collection_date, db_action, line_class='main')
+            update_tqi_trends(self.db.engine, collection_date)
         else:
             logging.info("Using existing TQI data from database")
             tqi_date = self.data.analysis_dates.get("TQI")
@@ -298,7 +301,7 @@ class Processor():
         if self.refresh_data("TG"):
             if self.data.tg_data is not None:
                 logging.info("Processing TG data")
-                self.process_tg_data()
+                self.process_tg_data(db_action="append")
             else:
                 logging.error("No input TG data provided")
         else:
@@ -565,15 +568,15 @@ class Processor():
                 section_data = get_section(seg_start_km, line_code, line_class="main")
                 if section_data:
                     if len(section_data) == 1:
-                        section_name, section_id = section_data[0]
+                        section_name, section_id, asset_name = section_data[0]
                     else:
                         logging.warning(
                             f"Found multiple track sections at chainage: {seg_start_km}, line_code: {line_code} \
                             and line_type: 'main'. Check the track section definitions."
                         )
-                        section_name, section_id = section_data[0]
+                        section_name, section_id, asset_name = section_data[0]
                 else:
-                    section_id, section_name = "", ""
+                    section_id, section_name, asset_name = "", "", ""
                 
                 station = get_station(seg_start_km)
                 
@@ -584,6 +587,7 @@ class Processor():
                     "section": section_id,
                     "section_name": section_name,
                     "station": station,
+                    "asset_name": asset_name,
                     "chainage_start_km": round(seg_start_km, 6),
                     "chainage_end_km": round(seg_end_km, 6),
                     "chainage_mid_km": round(seg_mid_km, 6),
@@ -757,26 +761,33 @@ class Processor():
         if input_sap_data is None:
             return
         
+        sap_data_clean = input_sap_data.rename(columns={c: clean_string(c, sap_column_mapping()) for c in input_sap_data.columns})
+        
         sap_records = []
-        for _, row in input_sap_data.iterrows():
+        seen_order_ids = set()
+        for _, row in sap_data_clean.iterrows():
             asset_id = row["Functional Location"]
+            report_date = pd.to_datetime(row["Start Date"], format="%d/%m/%Y") if pd.notna(row["Start Date"]) else None
+            year = report_date.year if report_date else None
             
-            sap_record_data = {
-                "date": row["Start Date"],
-                "year": row["Year"],
-                "revision": row["Revision"],
-                "planner_grp": row["Maint Planner Group"],
-                "work_center": row["Maint Work Center"],
-                "user_status": row["User Status"],
-                "system_status": row["System Status"],
-                "priority": row["Priority Text"],
-                "order_id": row["Order"],
-                "description": row["Description"],
-                "asset_id": asset_id,
-                "iridium_code": row["Iridium Code"],
-            }
+            if row["Order"] not in seen_order_ids:
+                sap_record_data = {
+                    "date": report_date,
+                    "year": year,
+                    "revision": row["Revision"],
+                    "planner_grp": row["Maint Planner Group"],
+                    "work_center": row["Maint Work Center"],
+                    "user_status": row["User Status"],
+                    "system_status": row["System Status"],
+                    "priority": row["Priority Text"],
+                    "order_id": row["Order"],
+                    "description": row["Description"],
+                    "asset_id": asset_id,
+                    "iridium_code": row.get("Iridium Code", ""),
+                }
+                seen_order_ids.add(row["Order"])
             
-            sap_records.append(sap_record_data)
+                sap_records.append(sap_record_data)
 
         self.sap_records = pd.DataFrame(sap_records)
         
@@ -836,7 +847,7 @@ class Processor():
             gbfi_records.append(gbfi_record)
             
         # post data to the database
-        post_to_db(gbfi_records, GBFIRecord, self.db.engine, action="replace")
+        post_to_db(gbfi_records, GBFIRecord, self.db.engine, action="append")
             
     def aggregate_gbfi_to_segments(self, collection_date: datetime) -> None:
         """
@@ -883,7 +894,7 @@ class Processor():
         # self.agg_gbfi_records = pd.DataFrame(agg_gbfi)
         
         # post data to the database
-        post_to_db(agg_gbfi, AggGBFI, self.db.engine, action="replace")
+        post_to_db(agg_gbfi, AggGBFI, self.db.engine, action="append")
     
     def process_tsr_data(self) -> None:
         """
@@ -935,7 +946,7 @@ class Processor():
             tsr_records.append(tsr_record)
             
         # post data to the database
-        post_to_db(tsr_records, TSRRecord, self.db.engine, action="replace")
+        post_to_db(tsr_records, TSRRecord, self.db.engine, action="append")
     
     def aggregate_tsr_to_segments(self) -> None:
         """
@@ -1027,7 +1038,7 @@ class Processor():
         logging.info(f"Aggregated TSR data for {len(agg_tsr)} segments")
 
         # post data to the database
-        post_to_db(agg_tsr, AggTSR, self.db.engine, action="replace")
+        post_to_db(agg_tsr, AggTSR, self.db.engine, action="append")
     
     def create_curve_sections(self) -> None:
         def _get_segment(line_id: str, chainage: float):
@@ -1175,7 +1186,7 @@ class Processor():
         self.curve_sections = gpd.GeoDataFrame(new_curve_sections, crs=self.working_crs)
 
         # post data to the database
-        post_to_db(new_curve_sections, RailSection, self.db.engine, action="replace")
+        post_to_db(new_curve_sections, RailSection, self.db.engine, action="append")
         
         self.curve_interval_tree = {}
         for line_id, intervals in curve_intervals.items():
@@ -1246,7 +1257,7 @@ class Processor():
                 agg_assets.append(agg_asset_data)
 
         # post data to the database
-        post_to_db(agg_assets, AggAsset, self.db.engine, action="replace")
+        post_to_db(agg_assets, AggAsset, self.db.engine, action="append")
     
     def process_rp_data_into_sections(self):
         """
@@ -1558,15 +1569,18 @@ class Processor():
         self.rp_sections = gpd.GeoDataFrame(rp_sections, geometry="geometry", crs=self.working_crs)
         self.tg_sections = gpd.GeoDataFrame(tg_sections, geometry="geometry", crs=self.working_crs)
 
-    def process_tg_data(self):
+    def process_tg_data(self, collection_date: datetime = None, db_action: str = None, line_class: str = "main"):
         """
-        Process track geometry (TG) data into standard format for database insertion
+        Aggregate track geometry (TG) data into 100m chainage segments.
+
+        Rather than storing raw TG records, computes mean/min/max statistics across
+        all TG readings that fall within each segment's chainage bounds.
         """
         tg_data = self.data.tg_data
         if tg_data is None:
             logging.info("No TG data found")
             return
-        
+
         column_name_mapping = {
             "SF": "id",
             "East Top 5m": "top_e_5",
@@ -1592,38 +1606,86 @@ class Processor():
             "Warp Medium": "warp",
             "Valid": "valid",
         }
-        
-        logging.info("applying corrections to raw data")
+
+        logging.info("Applying corrections to raw TG data")
         apply_corrections(tg_data, self.THOMAS_END, column_name_mapping)
-        tg_data = tg_data[tg_data["line_code"] != "OTH"].copy()
-        logging.info("...done")
 
-        # Filter out rows with missing critical data
-        tg_data = tg_data.dropna(subset=['chainage_km'])
+        # Keep only valid, main-line records with a known chainage
+        tg_data = tg_data[
+            tg_data["line_code"].notna() &
+            (tg_data["line_code"] != "OTH") &
+            (tg_data["line_class"] == line_class) &
+            tg_data["chainage_km"].notna()
+        ].copy()
+        logging.info(f"...{len(tg_data)} TG records after filtering")
 
-        # Select columns that match TGRecord schema
-        columns_to_extract = [
-            'chainage_km', 'speed', 'post_speed', 'trk_class',
-            'top_e_5', 'top_e_10', 'top_e_20',
-            'top_w_5', 'top_w_10', 'top_w_20',
-            'align_e_5', 'align_e_10', 'align_e_20',
-            'align_w_5', 'align_w_10', 'align_w_20',
-            'gauge', 'crosslevel', 'crosslevel_rate',
-            'curve', 'curve_rate',
-            'twist_2', 'twist_7', 'twist_14',
-            'warp', 'valid',
-            'geometry', 'collection_date'
+        if collection_date is None and "collection_date" in tg_data.columns:
+            valid_dates = tg_data["collection_date"].dropna()
+            collection_date = valid_dates.mode().iloc[0] if not valid_dates.empty else None
+
+        # Pre-group by line_code for efficient per-segment lookup
+        tg_by_line = {lc: grp for lc, grp in tg_data.groupby("line_code")}
+
+        # Speed columns: average only
+        speed_cols = ["speed", "post_speed"]
+        # Geometry columns: mean, min, max
+        geom_cols = [
+            "gauge", "crosslevel", "crosslevel_rate",
+            "curve", "curve_rate",
+            "twist_2", "twist_7", "twist_14",
+            "warp",
+            "top_e_10", "top_w_10",
+            "align_e_10", "align_w_10",
         ]
 
-        # Convert to list of dictionaries
-        tg_records = tg_data[columns_to_extract].to_dict('records')
+        agg_tg = []
+        for line_code, (_, segments_gdf) in self.segment_data.items():
+            line_tg = tg_by_line.get(line_code)
+            if line_tg is None or line_tg.empty:
+                continue
 
-        logging.info(f"Processing {len(tg_records)} TG records for database insertion")
+            for _, segment in segments_gdf.iterrows():
+                seg_tg = line_tg[
+                    (line_tg["chainage_km"] >= segment.chainage_start_km) &
+                    (line_tg["chainage_km"] < segment.chainage_end_km)
+                ]
 
-        # Post data to the database
-        post_to_db(tg_records, TGRecord, self.db.engine, action="replace")
+                if seg_tg.empty:
+                    continue
+
+                record = {
+                    "chainage_id": segment.chainage_id,
+                    "line_code": line_code,
+                    "line_class": line_class,
+                    "sample_count": len(seg_tg),
+                    "collection_date": collection_date,
+                }
+
+                for col in speed_cols:
+                    if col in seg_tg.columns:
+                        col_data = seg_tg[col].dropna()
+                        record[f"avg_{col}"] = float(col_data.mean()) if not col_data.empty else None
+
+                for col in geom_cols:
+                    if col in seg_tg.columns:
+                        col_data = seg_tg[col].dropna()
+                        if col_data.empty:
+                            record[f"avg_{col}"] = record[f"min_{col}"] = record[f"max_{col}"] = None
+                        else:
+                            record[f"avg_{col}"] = float(col_data.mean())
+                            record[f"min_{col}"] = float(col_data.min())
+                            record[f"max_{col}"] = float(col_data.max())
+
+                agg_tg.append(record)
+
+        logging.info(f"Aggregated TG data for {len(agg_tg)} segments")
+
+        if db_action:
+            post_to_db(agg_tg, AggTG, self.db.engine, action=db_action)
+
+        return agg_tg
     
-    def process_tqi_data(self, collection_date: datetime) -> None:
+    def process_tqi_data(self, collection_date: datetime, db_action: str = None) -> None:
         """
         Process ENSCO calculated TQI data into standard format for database insertion.
         
@@ -1651,13 +1713,14 @@ class Processor():
         tqi_data = tqi_data.rename(columns={c: clean_string(c, column_name_mapping) for c in tqi_data.columns})
 
         # Populate line, line_code, and line_class
+        print(tqi_data.columns)
         tqi_data[["line", "line_code", "line_class"]] = tqi_data["asset_name"].apply(get_section_metadata)
 
         tqi_data["chainage_mid_km"] = (tqi_data["chainage_start_km"] + tqi_data["chainage_end_km"]) / 2
         tqi_data["collection_date"] = collection_date
         
         # Filter out rows with missing critical data (including invalid collection dates)
-        tqi_data = tqi_data.dropna(subset=['line_code', 'tqi'])
+        tqi_data = tqi_data.dropna(subset=['line_code', 'tqi', 'chainage_start_km'])
 
         # Select columns that match TGRecord schema
         columns_to_extract = ["line", "line_code", "line_class", "asset_name", "chainage_start_km",
@@ -1669,9 +1732,9 @@ class Processor():
         logging.info(f"Processing {len(tqi_records)} TQI records for database insertion")
 
         # Post data to the database
-        post_to_db(tqi_records, TQIRecord, self.db.engine, action="replace")
+        post_to_db(tqi_records, TQIRecord, self.db.engine, action=db_action)
       
-    def aggregate_tqi_to_segments(self, collection_date: datetime, line_class: str = "main") -> None:
+    def aggregate_tqi_to_segments(self, collection_date: datetime, db_action: str = None, line_class: str = "main") -> None:
         """
         Aggregate TQI data to rail segments. Take the segment chainage mid-point and find the closest TQI sample
         as the representative TQI for this segment.
@@ -1682,6 +1745,7 @@ class Processor():
         query = f"""
             SELECT * FROM tqi_records
             WHERE line_class = '{line_class}'
+            AND collection_date = '{collection_date}'
         """
         
         tqi_data = get_table_data(self.db.engine, query=query)    # to do: add filter for collection date
@@ -1693,7 +1757,7 @@ class Processor():
         logging.info(f"Processing {len(tqi_data)} TQR records across segments...")
 
         thresholds = TQI_THRESHOLDS()
-        
+
         agg_tqi = []
         for line_code, (_, segments_gdf) in self.segment_data.items():
             # Filter TQR data for this line code
@@ -1701,16 +1765,22 @@ class Processor():
 
             if line_tqi.empty:
                 continue
-            
+
+            tqi_by_asset = {name: grp for name, grp in line_tqi.groupby("asset_name")}
+
             for _, segment in segments_gdf.iterrows():
                 chainage_id = segment.chainage_id
                 seg_chainage_start = segment.chainage_start_km
                 seg_chainage_end = segment.chainage_end_km
                 seg_chainage_mid = (seg_chainage_start + seg_chainage_end) / 2
+                seg_asset_name = segment.asset_name
 
                 # Find TQI record with closest chainage_mid_km to segment midpoint
-                closest_idx = (line_tqi["chainage_mid_km"] - seg_chainage_mid).abs().idxmin()
-                closest_tqi = line_tqi.loc[closest_idx]
+                asset_tqi = tqi_by_asset.get(seg_asset_name)
+                if asset_tqi is None:
+                    continue
+                closest_idx = (asset_tqi["chainage_mid_km"] - seg_chainage_mid).abs().idxmin()
+                closest_tqi = asset_tqi.loc[closest_idx]
 
                 agg_tqi_data = {
                     "chainage_id": chainage_id,
@@ -1718,6 +1788,7 @@ class Processor():
                     "line_code": line_code,
                     "line_class": line_class,
                     "status": thresholds.get_status(closest_tqi.tqi),
+                    "trend": None,  # populated post-insert by update_tqi_trends()
                     "collection_date": closest_tqi.collection_date
                 }
 
@@ -1726,7 +1797,7 @@ class Processor():
         logging.info(f"Aggregated TQI data for {len(agg_tqi)} segments")
 
         # post data to the database
-        post_to_db(agg_tqi, AggTQI, self.db.engine, action="replace")
+        post_to_db(agg_tqi, AggTQI, self.db.engine, action=db_action)
 
     def process_dtr_data(self, collection_date: datetime):
         """
@@ -1775,7 +1846,7 @@ class Processor():
         logging.info(f"Processing {len(dtr_records)} DTR records for database insertion")
 
         # Post data to the database
-        post_to_db(dtr_records, DTRRecord, self.db.engine, action="replace")
+        post_to_db(dtr_records, DTRRecord, self.db.engine, action="append")
     
     def aggregate_dtr_to_segments(self, collection_date: datetime, line_class: str = "main") -> None:
         """
@@ -1860,7 +1931,7 @@ class Processor():
         logging.info(f"Aggregated DTR data for {len(agg_dtr)} segments")
 
         # post data to the database
-        post_to_db(agg_dtr, AggDTR, self.db.engine, action="replace")
+        post_to_db(agg_dtr, AggDTR, self.db.engine, action="append")
     
     def process_ballast_data(self, collection_date: datetime) -> None:
         """
@@ -1878,6 +1949,12 @@ class Processor():
                 ballast_data_clean["start_chainage_km"] = ballast_data_clean["distance_str"].apply(
                     lambda x: float(x.split("+")[0].strip()) + float(x.split("+")[1].strip()) / 1000
                     if isinstance(x, str) and "+" in x else None
+                )
+                
+                # OR Convert distance from "4. 296" format to 4.296 km for example
+                ballast_data_clean["start_chainage_km"] = ballast_data_clean["distance_str"].apply(
+                    lambda x: float(x.split(".")[0].strip()) + float(x.split(".")[1].strip()) / 1000
+                    if isinstance(x, str) and "." in x else None
                 )
 
                 # Calculate center: use center value if valid float, otherwise average of left and right, otherwise NA
@@ -1928,7 +2005,7 @@ class Processor():
             ballast_records.append(ballast_record)
             
         # post data to the database
-        post_to_db(ballast_records, BallastRecord, self.db.engine, action="replace")
+        post_to_db(ballast_records, BallastRecord, self.db.engine, action="append")
     
     def aggregate_ballast_to_segments(self, collection_date: datetime) -> None:
         """
@@ -1965,7 +2042,7 @@ class Processor():
                 agg_ballast.append(agg_ballast_data)
         
         # post data to the database
-        post_to_db(agg_ballast, AggBallast, self.db.engine, action="replace")
+        post_to_db(agg_ballast, AggBallast, self.db.engine, action="append")
         
     def write_outputs(self):
         logging.info("Writing outputs")

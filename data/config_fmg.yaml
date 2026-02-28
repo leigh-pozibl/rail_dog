@@ -25,36 +25,39 @@
             # "base_data/raw/assets.xlsx": {
             #     "assets": "ASSETS"
             # },
-            # "base_data/raw/sap.xlsx": {
-            #     "sap": "SAP",
+            # "base_data/raw/sap/sap_202602.xlsx": {
+            #     "in": "SAP",
             # },
-            # "base_data/raw/tsr.xlsx": {
+            # "base_data/raw/tsr/tsr.xlsx": {
             #     "TSR Open": "TSR_OPEN",
             #     "TSR Complete": "TSR_COMPLETE",
             # },
             # the following data sources we will log against a collection date
-            # "base_data/raw/gbfi.xlsx": {
+            # "base_data/raw/gbfi/gbfi_202510.xlsx": {
             #     "Main": "GBFI_ML",
             #     "Solomon": "GBFI_SL",
             #     "Eliwana": "GBFI_EL",
             #     "HEADER_ROWS": 6,
-            #     "COLLECTION_DATE": "2024-09",
+            #     "COLLECTION_DATE": "2025-10",
+            #     "ACTION": "append"  # options: "replace" or "append" when posting to the database
             # },
-            # "base_data/raw/tqi.xlsx": {
-            #     "in": "TQI",
-            #     "COLLECTION_DATE": "2025-03",
-            # },
-            # "base_data/raw/dtr.xlsx": {
+            "base_data/raw/tqi/tqi_202512.csv": {
+                "tqi_202512": "TQI",
+                "HEADER_ROWS": 1,
+                "COLLECTION_DATE": "2025-12",
+                "ACTION": "append"  # options: "replace" or "append" when posting to the database
+            },
+            # "base_data/raw/dtr/dtr_20260115.xlsx": {
             #     "All Data": "DTR",
-            #     "COLLECTION_DATE": "2025-02-27",
+            #     "COLLECTION_DATE": "2026-01-15",
             #     "HEADER_ROWS": 8,
             # },
-            # "base_data/raw/ballast.xlsx": {
-            #     # "Ballast Thomas": "BALL_TL",  # don't use this - TL data is in the ML tab
-            #     "Ballast Mainline": "BALL_ML",
-            #     "Ballast Solomon": "BALL_SL",
-            #     "Ballast Eliwana": "BALL_EL",
-            #     "COLLECTION_DATE": "2024-10-01",
+            # "base_data/raw/ballast/ballast_202510.xlsx": {
+            #     # "Thomas": "BALL_TL",  # don't use this - TL data is in the ML tab
+            #     "Main": "BALL_ML",
+            #     "Solomon": "BALL_SL",
+            #     "Eliwana": "BALL_EL",
+            #     "COLLECTION_DATE": "2025-10-01",
             #     "HEADER_ROWS": 7,
             # },
         },
@@ -64,9 +67,9 @@
         #     "base_data/processed/SML.csv",
         #     "base_data/processed/EML.csv",
         # ],
-        # "rp_raw_data": "base_data/ensco/Mar 2025/RP",
+        # "rp_raw_data": "base_data/ensco/Mar 2025",
         # "ensco_db": "process/ensco_data_corrected.duckdb"
-        # "tg_raw_data": "base_data/ensco/Mar 2025/TG",
+        "tg_raw_data": "base_data/raw/ensco/2025-12",
         "actions": {
             "BASE_SEGMENTS": "use_db",
             "ASSETS": "use_db",
@@ -75,7 +78,7 @@
             "CURVE_SECTIONS": "use_db",
             "GBFI": "use_db",
             "TSR": "use_db",
-            "TG": "use_db",
+            "TG": "refresh",
             "TQI": "use_db",
             "DTR": "use_db",
             "BALL": "use_db",
@@ -97,41 +100,13 @@
             "output_fmt": "geojson",
             "origin": [662669.066, 7746597.522]
         },
-        "input_fields": {
-            "parcels": {
-                "ID": "APN9",
-                "ADDRESS": "ADDRESS",
-                "DEMAND": "DEMAND",
-            },
-            "ug_path": {
-                "ID": "id"
-            },
-            "ug_points": {
-                "ID": "id"
-            },
-            "oh_path": {
-                "ID": "id"
-            },
-            "oh_points": {
-                "ID": "POLE_NO"
-            }
-        },
         "preprocess": {
             "segment_length": 100,
             "segment_method": "respect_curve_boundaries"
-        },
-        "costs": {
-            "nodes": {
-                "default": 1.0,
-            },
-            "edges": {
-                "default": 1.0,
-                "crossing": 10.0,
-            }
-        },
+        }
     },
 
     "execution": {
-        "run_steps": ["pp"]
+        "process_only": True
     }
 }

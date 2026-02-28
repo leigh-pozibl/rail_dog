@@ -208,6 +208,41 @@ BRIDGE_TREATMENT_THRESHOLDS = {
     "tamp_only_ballast_depth_threshold": 0.25,        # Z18 - ballast_depth threshold for tamp only (greater than or equal)
 }
 
+PRIORITY_THRESHOLDS = {
+    # Weights (sum to 1.0)
+    "priority_weight_tsr": 0.25,
+    "priority_weight_dtf": 0.25,
+    "priority_weight_tqi_status": 0.15,
+    "priority_weight_tqi_trend": 0.15,
+    "priority_weight_speed": 0.15,
+    "priority_weight_curve": 0.05,
+    # Normalization values (max possible score for each factor)
+    "priority_norm_tsr": 1,
+    "priority_norm_dtf": 2,
+    "priority_norm_tqi_status": 2,
+    "priority_norm_tqi_trend": 3,
+    "priority_norm_speed": 2,
+    "priority_norm_curve": 2,
+    # Speed thresholds
+    "priority_speed_low": 45,
+    "priority_speed_high": 65,
+    "priority_speed_min": 0,
+    "priority_speed_mid": 46,
+    # LX priority weights
+    "priority_lx_weight_fixed_asset": 0.3,
+    "priority_lx_weight_tsr": 0.25,
+    "priority_lx_weight_dtf": 0.2,
+    "priority_lx_weight_dtf_worse": 0.10,
+    "priority_lx_weight_speed": 0.15,
+    # LX priority normalization
+    "priority_lx_norm_fixed_asset": 2,
+    "priority_lx_norm_tsr": 1,
+    "priority_lx_norm_dtf": 2,
+    "priority_lx_norm_dtf_worse": 1,
+    "priority_lx_norm_speed": 0.15,
+    
+}
+
 # @dataclass
 # class TreatmentThresholds:
 #     treatment:str

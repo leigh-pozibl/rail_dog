@@ -8,7 +8,7 @@ from uuid import UUID, uuid4
 import pandas as pd
 
 from sqlmodel import SQLModel, Field, Relationship, Column, Numeric
-from sqlalchemy import JSON
+from sqlalchemy import JSON, UniqueConstraint
 from geoalchemy2 import Geometry
 
 
@@ -57,6 +57,7 @@ class RailSegment(SQLModel, table=True):
     section: str = Field(max_length=100)
     section_name: str = Field(max_length=100)
     station: str = Field(max_length=100)
+    asset_name: str = Field(max_length=100)  # eg: "MLE_3.963_4.301"
     chainage_start_km: float
     chainage_end_km: float
     chainage_mid_km: float
@@ -194,6 +195,7 @@ class TGRecord(SQLModel, table=True):
     __tablename__ = "tg_records"
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
+    asset_name: str = Field(max_length=100)  # eg: "MLE_3.963_4.301"
     
     # Measurement info
     chainage_km: float
@@ -240,6 +242,80 @@ class TGRecord(SQLModel, table=True):
     # rail_segments: RailSegment = Relationship(back_populates="track_geometry_data")
 
 
+class AggTG(SQLModel, table=True):
+    """Track geometry data aggregated to 100m chainage segments."""
+    __tablename__ = "agg_tg"
+    __table_args__ = (UniqueConstraint("chainage_id", "collection_date", name="uq_agg_tg_chainage_date"),)
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    chainage_id: str = Field(max_length=100, index=True)
+    line_code: str = Field(max_length=3, index=True)
+    line_class: str = Field(max_length=10, index=True)
+    sample_count: int
+
+    # Speed
+    avg_speed: Optional[float] = None
+    avg_post_speed: Optional[float] = None
+
+    # Gauge
+    avg_gauge: Optional[float] = None
+    min_gauge: Optional[float] = None
+    max_gauge: Optional[float] = None
+
+    # Crosslevel
+    avg_crosslevel: Optional[float] = None
+    min_crosslevel: Optional[float] = None
+    max_crosslevel: Optional[float] = None
+    avg_crosslevel_rate: Optional[float] = None
+    min_crosslevel_rate: Optional[float] = None
+    max_crosslevel_rate: Optional[float] = None
+
+    # Curve
+    avg_curve: Optional[float] = None
+    min_curve: Optional[float] = None
+    max_curve: Optional[float] = None
+    avg_curve_rate: Optional[float] = None
+    min_curve_rate: Optional[float] = None
+    max_curve_rate: Optional[float] = None
+
+    # Twist
+    avg_twist_2: Optional[float] = None
+    min_twist_2: Optional[float] = None
+    max_twist_2: Optional[float] = None
+    avg_twist_7: Optional[float] = None
+    min_twist_7: Optional[float] = None
+    max_twist_7: Optional[float] = None
+    avg_twist_14: Optional[float] = None
+    min_twist_14: Optional[float] = None
+    max_twist_14: Optional[float] = None
+
+    # Warp
+    avg_warp: Optional[float] = None
+    min_warp: Optional[float] = None
+    max_warp: Optional[float] = None
+
+    # Top (10m base)
+    avg_top_e_10: Optional[float] = None
+    min_top_e_10: Optional[float] = None
+    max_top_e_10: Optional[float] = None
+    avg_top_w_10: Optional[float] = None
+    min_top_w_10: Optional[float] = None
+    max_top_w_10: Optional[float] = None
+
+    # Alignment (10m base)
+    avg_align_e_10: Optional[float] = None
+    min_align_e_10: Optional[float] = None
+    max_align_e_10: Optional[float] = None
+    avg_align_w_10: Optional[float] = None
+    min_align_w_10: Optional[float] = None
+    max_align_w_10: Optional[float] = None
+
+    # Metadata
+    collection_date: Optional[datetime] = Field(default=None, index=True)
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class Asset(SQLModel, table=True):
     """Railway assets (switches, signals, etc.)."""
     __tablename__ = "assets"
@@ -278,6 +354,7 @@ class Asset(SQLModel, table=True):
 class AggAsset(SQLModel, table=True):
     """Railway asset counts aggregated to chainage segments."""
     __tablename__ = "agg_assets"
+    __table_args__ = (UniqueConstraint("chainage_id", name="uq_agg_assets_chainage"),)
     
     id: UUID = Field(default_factory=uuid4, primary_key=True)
 
@@ -333,6 +410,20 @@ class SAPRecord(SQLModel, table=True):
     # asset: Asset = Relationship(back_populates="asset")
 
 
+def sap_column_mapping() -> dict:
+    return {
+        "FunctionalLocationLabel": "Functional Location",
+        "BasicStartDate": "Start Date",
+        "Revision": "Revision",
+        "PlannerGroup": "Maint Planner Group",
+        "MainWorkCentre": "Maint Work Center",
+        "UserStatus": "User Status",
+        "OrderSystemStatus": "System Status",
+        "PriorityText": "Priority Text",
+        "OrderNumber": "Order",
+        "OrderDescription": "Description",
+    }
+          
 class GBFIRecord(SQLModel, table=True):
     """Ground Penetrating Radar records."""
     __tablename__ = "gbfi_records"
@@ -391,7 +482,8 @@ def extract_collection_date_from_header(gbfi_header: pd.DataFrame):
 class AggGBFI(SQLModel, table=True):
     """GBFI records aggregated to chainage segments."""
     __tablename__ = "agg_gbfi"
-    
+    __table_args__ = (UniqueConstraint("chainage_id", "collection_date", name="uq_agg_gbfi_chainage_date"),)
+
     id: UUID = Field(default_factory=uuid4, primary_key=True)
 
     # Aggregated GBFI info
@@ -438,6 +530,7 @@ class BallastRecord(SQLModel, table=True):
 def ballast_column_mapping() -> dict:
     return {
         "Distance(km+m)": "distance_str",
+        "Distance(km.m)": "distance_str",
         "WE(m)": "easting",
         "SN(m)": "northing",
         "Long_0": "lng",
@@ -454,7 +547,8 @@ def ballast_column_mapping() -> dict:
 class AggBallast(SQLModel, table=True):
     """Ballast records aggregated to chainage segments."""
     __tablename__ = "agg_ballast"
-    
+    __table_args__ = (UniqueConstraint("chainage_id", "collection_date", name="uq_agg_ballast_chainage_date"),)
+
     id: UUID = Field(default_factory=uuid4, primary_key=True)
 
     # Aggregated Ballast info
@@ -489,7 +583,8 @@ class TSRRecord(SQLModel, table=True):
 class AggTSR(SQLModel, table=True):
     """TSR records aggregated to chainage segments."""
     __tablename__ = "agg_tsr"
-    
+    __table_args__ = (UniqueConstraint("chainage_id", name="uq_agg_tsr_chainage"),)
+
     id: UUID = Field(default_factory=uuid4, primary_key=True)
 
     # Aggregated TSR info
@@ -510,6 +605,7 @@ class AggTSR(SQLModel, table=True):
 class TQIRecord(SQLModel, table=True):
     """Track Quality Indicator records."""
     __tablename__ = "tqi_records"
+    __table_args__ = (UniqueConstraint("asset_name", "chainage_start_km", "collection_date", name="uq_tqi_records_asset_chainage_date"),)
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     
@@ -533,7 +629,8 @@ class TQIRecord(SQLModel, table=True):
 class AggTQI(SQLModel, table=True):
     """TQI records aggregated to chainage segments."""
     __tablename__ = "agg_tqi"
-    
+    __table_args__ = (UniqueConstraint("chainage_id", "collection_date", name="uq_agg_tqi_chainage_date"),)
+
     id: UUID = Field(default_factory=uuid4, primary_key=True)
 
     # Aggregated TQI info
@@ -542,10 +639,38 @@ class AggTQI(SQLModel, table=True):
     # line_class: str = Field(max_length=10, index=True)  # main, bypass, loop
     tqi: float
     status: str
+    trend: Optional[str] = Field(default=None, max_length=20)      # improving / stable / degrading
+    trend_slope: Optional[float] = None                             # TQI units/year
+    trend_r_squared: Optional[float] = None                         # goodness of fit [0-1]
     
     # Metadata
     collection_date: datetime = Field(index=True)
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+class SegmentTrend(SQLModel, table=True):
+    """Precomputed trend per chainage segment for a given metric (tqi, gbfi_avg, ballast_centre, etc.).
+
+    One record per (chainage_id, metric, computed_for_date), so the full trend
+    history is preserved as new data is ingested over time.
+    """
+    __tablename__ = "segment_trends"
+    __table_args__ = (UniqueConstraint("chainage_id", "metric", "computed_for_date", name="uq_segment_trends_chainage_metric_date"),)
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    chainage_id: str = Field(max_length=100, index=True)
+    metric: str = Field(max_length=50, index=True)           # e.g. "tqi", "gbfi_avg", "ballast_centre"
+    computed_for_date: datetime = Field(index=True)          # as-of date: only data up to this date was used
+    slope: Optional[float] = None                            # metric units/year (positive = improving)
+    r_squared: Optional[float] = None                        # goodness of fit [0-1]
+    trend_label: Optional[str] = Field(default=None, max_length=20)  # improving / stable / degrading
+    sample_count: int = Field(default=0)
+    date_range_start: Optional[datetime] = None
+    date_range_end: Optional[datetime] = None
+
+    # Metadata
+    computed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
 
 class DTRRecord(SQLModel, table=True):
@@ -574,7 +699,8 @@ class DTRRecord(SQLModel, table=True):
 class AggDTR(SQLModel, table=True):
     """DTR records aggregated to chainage segments."""
     __tablename__ = "agg_dtr"
-    
+    __table_args__ = (UniqueConstraint("chainage_id", "collection_date", name="uq_agg_dtr_chainage_date"),)
+
     id: UUID = Field(default_factory=uuid4, primary_key=True)
 
     # Aggregated DTR info
