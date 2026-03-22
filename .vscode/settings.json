@@ -1,0 +1,81 @@
+{
+  "python.defaultInterpreterPath": "/home/leigh/envs/env_rail/bin/python",
+  
+  // Python paths
+  "python.analysis.extraPaths": [
+    "/home/leigh/repos/snappy_tools/snappy_utils"
+  ],
+  "python-envs.pythonProjects": [
+    {
+      "path": "",
+      "envManager": "ms-python.python:venv",
+      "packageManager": "ms-python.python:pip"
+    }
+  ],
+
+  // Python Analysis (Pylance)
+  "python.analysis.diagnosticSeverityOverrides": {
+    "reportUnusedImport": "warning",
+    "reportUnusedVariable": "warning",
+    "reportUnusedFunction": "information",
+    "reportUnusedClass": "information",
+    "reportMissingImports": "error",
+    "reportMissingTypeStubs": "none",
+    "reportGeneralTypeIssues": "warning"
+  },
+  "python.analysis.typeCheckingMode": "basic",
+
+  // Linting
+  "python.linting.enabled": true,
+  "python.linting.flake8Enabled": true,
+  "python.linting.flake8Args": [
+    "--max-line-length=120",
+    "--extend-ignore=E203,W503",
+    "--exclude=snappy_cat/snappy_cat/solvers/scip_vrp.py,snappy_cat/snappy_cat/solvers/scip_flp.py"
+  ],
+
+  // Formatting
+  "python.formatting.provider": "black",
+  "python.formatting.blackArgs": [
+    "--line-length=120"
+  ],
+
+  // Editor settings
+  "editor.formatOnSave": true,
+  "editor.codeActionsOnSave": {
+    "source.organizeImports": "explicit"
+  },
+  "editor.rulers": [120],
+
+  // isort (import organization)
+  "[python]": {
+    "editor.defaultFormatter": "ms-python.black-formatter",
+    "editor.formatOnSave": true,
+    "editor.codeActionsOnSave": {
+      "source.organizeImports": "explicit"
+    }
+  },
+  "isort.args": [
+    "--profile=black",
+    "--line-length=120"
+  ],
+
+  // Testing
+  "python.testing.pytestEnabled": true,
+  "python.testing.unittestEnabled": false,
+  "python.testing.pytestArgs": [
+    "-v"
+  ],
+
+  // Files
+  "files.exclude": {
+    "**/__pycache__": true,
+    "**/*.pyc": true,
+    "**/.pytest_cache": true,
+    "**/.mypy_cache": true,
+    "**/*.egg-info": true
+  }
+
+  
+}
+
