@@ -1,3 +1,14 @@
+# Backward compatibility shim — report has moved to rail_dog.report package.
+# This file re-exports the public API so existing imports continue to work.
+from rail_dog.report.report import Report
+from rail_dog.report.rule_engine import RuleEngine
+from rail_dog.report.excel import add_merged_header_row
+
+__all__ = ["Report", "RuleEngine", "add_merged_header_row"]
+
+# ── original source retained below for reference only ────────────────────────
+# (not imported; kept so git history remains readable)
+
 import logging
 import os
 from typing import Optional, List, Any
@@ -12,7 +23,7 @@ from rail_dog.configs.thresholds import PLAINLINE_TREATMENT_THRESHOLDS, LX_TREAT
 from rail_dog.configs.library import REGION_PRIORITY
 
 
-class RuleEngine:
+class _OriginalRuleEngine:
     """
     Rule engine for applying conditional logic to DataFrames using list-based rules.
 
@@ -274,7 +285,7 @@ class RuleEngine:
                 print(f"Rule {i+1}: ERROR - {e}")
 
 
-class Report():
+class _OriginalReport():
     def __init__(
         self,
         engine: Engine,
@@ -2277,7 +2288,6 @@ class Report():
         with open(out_path, "w", encoding="utf-8") as f:
             f.write(html)
         logging.info(f"TQI HTML report saved to: {out_path}")
-
 
 def add_merged_header_row(worksheet, col_groups: list):
     # Insert merged cells in first row

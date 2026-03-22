@@ -1,3 +1,12 @@
+# Backward compatibility shim — Processor has moved to rail_dog.processing package.
+# This file re-exports Processor so existing imports continue to work.
+from rail_dog.processing.processor import Processor
+
+__all__ = ["Processor"]
+
+# ── original source retained below for reference only ────────────────────────
+# (not imported; kept so git history remains readable)
+
 import os
 import logging
 import copy
@@ -37,7 +46,7 @@ from rail_dog.configs.library import get_station, get_section, get_section_metad
 from rail_dog.utils.trend_utils import compute_trend
 
 
-class Processor():
+class _OriginalProcessor():
     def __init__(self, params: BaseConfiguration, db: DBConnection, metadata: Metadata, output_dir: str):
 
         self.db = db

@@ -1,0 +1,73 @@
+plainline_treatment_rules = [
+    # Rule 1: IF fixed_asset=True, "No Treatment"
+    [
+        ("agg_asset.fixed_asset", "==", True),
+        "No Treatment"
+    ],
+
+    # Rule 2: IF AND(OR(TQI status="poor"|"critical"), GBFI>=threshold), "Formation Renewal"
+    [
+        ["AND",
+            ["OR",
+                ("agg_tqi.status", "==", "poor"),
+                ("agg_tqi.status", "==", "critical")
+            ],
+            ("agg_gbfi.max_of_avg", ">=", "threshold.gbfi_bog_threshold_1")
+        ],
+        "Local Formation Renewal (Bog Hole)"
+    ],
+
+    # Rule 3: IF AND(GBFI>=threshold, OR(DTR severity), TSR history), "Formation Renewal"
+    [
+        ["AND",
+            ("agg_gbfi.max_of_avg", ">=", "threshold.gbfi_bog_threshold_2"),
+            ["OR",
+                ("agg_dtr.worst_dtf", "==", "s1"),
+                ("agg_dtr.worst_dtf", "==", "s2")
+            ],
+            ("agg_tsr.complete_tsr", "==", True)
+        ],
+        "Local Formation Renewal (Bog Hole)"
+    ],
+
+    # Rule 4: IF AND(OR(TQI status="poor"|"critical"), GBFI Avg), "Ballast Clean"
+    [
+        ["AND",
+            ["OR",
+                ("agg_tqi.status", "==", "poor"),
+                ("agg_tqi.status", "==", "critical")
+            ],
+            ("agg_gbfi.avg_of_avg", ">=", "threshold.ballast_clean_threshold")
+        ],
+        "Ballast Clean"
+    ],
+
+    # Rule 5: IF AND(OR(TQI status="poor"|"critical"), GBFI Avg, Ballast Centre, "Lift & Tamp"
+    [
+        ["AND",
+            ["OR",
+                ("agg_tqi.status", "==", "poor"),
+                ("agg_tqi.status", "==", "critical")
+            ],
+            ("agg_gbfi.avg_of_avg", "<", "threshold.lift_tamp_gbfi_avg_threshold"),
+            ("agg_ballast.ballast_centre", "<", "threshold.lift_tamp_ballast_depth_threshold")
+        ],
+        "Lift & Tamp"
+    ],
+
+    # Rule 6: IF AND(OR(TQI status="poor"|"critical"), GBFI Avg, Ballast Cnetre), "Tamp Only"
+    [
+        ["AND",
+            ["OR",
+                ("agg_tqi.status", "==", "poor"),
+                ("agg_tqi.status", "==", "critical")
+            ],
+            ("agg_gbfi.avg_of_avg", "<", "threshold.tamp_only_gbfi_avg_threshold"),
+            ("agg_ballast.ballast_centre", ">=", "threshold.tamp_only_ballast_depth_threshold")
+        ],
+        "Tamp Only"
+    ],
+
+    # Default
+    "No Treatment"
+]
