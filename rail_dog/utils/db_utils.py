@@ -8,6 +8,7 @@ import pandas as pd
 import geopandas as gpd
 from sqlmodel import Session, SQLModel, select
 from sqlalchemy import inspect, text
+from sqlalchemy.dialects.postgresql import insert as pg_insert
 
 from rail_dog.configs.schema import create_table, Asset, SAPRecord, AggTQI, SegmentTrend
 from rail_dog.configs.thresholds import ASSET_WORK_ORDER_THRESHOLDS
@@ -56,7 +57,7 @@ def setup_table(engine, model_class: Type[SQLModel], action: str = "replace") ->
         return True
 
 
-def post_to_db(data: list[dict], model_class: Type[SQLModel], engine, action="replace"):
+def post_to_db(data: list[dict], model_class: Type[SQLModel], engine, action="replace", skip_duplicates=False, upsert=False):
     """
     Post data to database table.
 
@@ -65,6 +66,8 @@ def post_to_db(data: list[dict], model_class: Type[SQLModel], engine, action="re
         model_class: SQLModel class (e.g., Asset, RailSection, etc.)
         engine: SQLAlchemy engine
         action: Behavior when table exists ("replace", "skip", "append")
+        skip_duplicates: If True, silently skip records that violate unique constraints
+        upsert: If True, overwrite existing records that violate unique constraints
     """
     from shapely.geometry.base import BaseGeometry
 
@@ -80,10 +83,88 @@ def post_to_db(data: list[dict], model_class: Type[SQLModel], engine, action="re
                 # Convert shapely geometry objects to WKT format for PostGIS
                 if 'geometry' in record_data and isinstance(record_data['geometry'], BaseGeometry):
                     record_data['geometry'] = record_data['geometry'].wkt
-                record = model_class(**record_data)
-                session.add(record)
+                if upsert:
+                    update_cols = {k: v for k, v in record_data.items() if k != 'id'}
+                    constraint_name = next(iter(model_class.__table_args__)).name
+                    stmt = pg_insert(model_class).values(**record_data).on_conflict_do_update(
+                        constraint=constraint_name,
+                        set_=update_cols,
+                    )
+                    session.exec(stmt)
+                elif skip_duplicates:
+                    stmt = pg_insert(model_class).values(**record_data).on_conflict_do_nothing()
+                    session.exec(stmt)
+                else:
+                    record = model_class(**record_data)
+                    session.add(record)
             session.commit()
         logging.info("Data successfully inserted into database")
+
+
+def query_agg_tsr(engine, as_of_date=None) -> pd.DataFrame:
+    """
+    Compute aggregated TSR stats at query time from tsr_records joined to rail_segments.
+
+    Args:
+        engine: SQLAlchemy engine
+        as_of_date: Optional date string (e.g. '2026-01-31') or date/datetime object.
+                    TSR records with report_date <= as_of_date are included.
+                    open/complete status is recomputed relative to this date.
+                    If None, uses today's date.
+
+    Returns:
+        DataFrame with one row per chainage_id containing open_tsr, open_tsr_days,
+        complete_tsr, and cnt_YYYY columns.
+    """
+    if as_of_date is None:
+        ref_date = datetime.now(timezone.utc).date().isoformat()
+    else:
+        ref_date = str(as_of_date)[:10]
+
+    query = text("""
+        WITH filtered_tsr AS (
+            SELECT *,
+                CASE
+                    WHEN close_date IS NULL OR close_date > :ref_date THEN 'open'
+                    ELSE 'complete'
+                END AS effective_status
+            FROM tsr_records
+            WHERE report_date <= :ref_date
+        ),
+        segment_tsr AS (
+            SELECT
+                rs.chainage_id,
+                t.report_date,
+                t.effective_status,
+                EXTRACT(YEAR FROM t.report_date)::int AS tsr_year
+            FROM rail_segments rs
+            JOIN filtered_tsr t
+                ON t.line_code = rs.line_code
+                AND t.chainage_end_km >= rs.chainage_start_km
+                AND t.chainage_start_km < rs.chainage_end_km
+        )
+        SELECT
+            rs.chainage_id,
+            COALESCE(BOOL_OR(st.effective_status = 'open'), FALSE) AS open_tsr,
+            COALESCE(SUM(
+                CASE WHEN st.effective_status = 'open'
+                THEN EXTRACT(DAY FROM (CAST(:ref_date AS timestamptz) - st.report_date))
+                ELSE 0 END
+            ), 0)::int AS open_tsr_days,
+            COALESCE(BOOL_OR(st.effective_status = 'complete'), FALSE) AS complete_tsr,
+            COALESCE(SUM(CASE WHEN st.effective_status = 'complete' AND st.tsr_year = 2022 THEN 1 ELSE 0 END), 0)::int AS cnt_2022,
+            COALESCE(SUM(CASE WHEN st.effective_status = 'complete' AND st.tsr_year = 2023 THEN 1 ELSE 0 END), 0)::int AS cnt_2023,
+            COALESCE(SUM(CASE WHEN st.effective_status = 'complete' AND st.tsr_year = 2024 THEN 1 ELSE 0 END), 0)::int AS cnt_2024,
+            COALESCE(SUM(CASE WHEN st.effective_status = 'complete' AND st.tsr_year = 2025 THEN 1 ELSE 0 END), 0)::int AS cnt_2025,
+            COALESCE(SUM(CASE WHEN st.effective_status = 'complete' AND st.tsr_year = 2026 THEN 1 ELSE 0 END), 0)::int AS cnt_2026
+        FROM rail_segments rs
+        LEFT JOIN segment_tsr st ON st.chainage_id = rs.chainage_id
+        GROUP BY rs.chainage_id
+    """)
+
+    with engine.connect() as conn:
+        result = conn.execute(query, {"ref_date": ref_date})
+        return pd.DataFrame(result.fetchall(), columns=list(result.keys()))
 
 
 def update_assets_with_sap_data(engine):

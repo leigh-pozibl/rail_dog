@@ -423,10 +423,12 @@ def sap_column_mapping() -> dict:
         "OrderNumber": "Order",
         "OrderDescription": "Description",
     }
-          
+
+
 class GBFIRecord(SQLModel, table=True):
     """Ground Penetrating Radar records."""
     __tablename__ = "gbfi_records"
+    __table_args__ = (UniqueConstraint("collection_date", "line_code", "chainage_start_km", name="uq_gbfi_records_date_line_chainage"),)
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     
@@ -457,6 +459,10 @@ def gbfi_column_mapping() -> dict:
     return {
         "From(km+m)": "start_chainage_km",
         "To(km+m)": "end_chainage_km",
+        "From(km.m)": "start_chainage_km",
+        "To(km.m)": "end_chainage_km",
+        "From.m": "start_chainage_km",
+        "To.m": "end_chainage_km",
         "Long_0": "lng",
         "Lat_0": "lat",
         "GBFI_Left2": "left",
@@ -560,10 +566,64 @@ class AggBallast(SQLModel, table=True):
     # Metadata
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
     
+
+class MoistureRecord(SQLModel, table=True):
+    """Moisture records."""
+    __tablename__ = "moisture_records"
+    __table_args__ = (UniqueConstraint("collection_date", "line_code", "chainage_start_km", name="uq_moisture_records_date_line_chainage"),)
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
     
+    # moisture info
+    collection_date: datetime = Field(index=True)
+    chainage_start_km: float = Field(index=True)
+    chainage_end_km: float = Field(index=True)
+    avg: float
+    min: float
+    max: float
+    depth_a: float  # this is the surface measurement
+    
+    # Location
+    line_code: str = Field(max_length=3, index=True)
+
+    # Metadata
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
+def moisture_column_mapping() -> dict:
+    return {
+        "From(km+m)": "start_chainage_km",
+        "To(km+m)": "end_chainage_km",
+        "From(km.m)": "start_chainage_km",
+        "To(km.m)": "end_chainage_km",
+        "Loc(km+m)": "loc",
+        "Loc(km.m)": "loc",
+    }
+
+
+class AggMoisture(SQLModel, table=True):
+    """Moisture records aggregated to chainage segments."""
+    __tablename__ = "agg_moisture"
+    __table_args__ = (UniqueConstraint("chainage_id", "collection_date", name="uq_agg_moisture_chainage_date"),)
+
+    id: UUID = Field(default_factory=uuid4, primary_key=True)
+
+    # Aggregated Moisture info
+    chainage_id: str = Field(max_length=100, index=True)
+    collection_date: datetime = Field(index=True)
+    max_of_avg: float
+    avg_of_avg: float
+    max_of_depth_a: float
+    avg_of_depth_a: float
+    
+    # Metadata
+    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+
+
 class TSRRecord(SQLModel, table=True):
     """Temporary speed restriction records."""
     __tablename__ = "tsr_records"
+    __table_args__ = (UniqueConstraint("report_date", "line_code", "chainage_start_km", name="uq_tsr_record_date_chainage"),)
 
     id: UUID = Field(default_factory=uuid4, primary_key=True)
     
@@ -575,32 +635,12 @@ class TSRRecord(SQLModel, table=True):
     chainage_end_km: float = Field(index=True)
     speed: float
     close_date: Optional[datetime] = None
+    duration_days: Optional[int] = None
+    comment: Optional[str] = Field(default=None, max_length=255)
     
     # Metadata
     created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
-
-class AggTSR(SQLModel, table=True):
-    """TSR records aggregated to chainage segments."""
-    __tablename__ = "agg_tsr"
-    __table_args__ = (UniqueConstraint("chainage_id", name="uq_agg_tsr_chainage"),)
-
-    id: UUID = Field(default_factory=uuid4, primary_key=True)
-
-    # Aggregated TSR info
-    chainage_id: str = Field(max_length=100, index=True)
-    open_tsr: bool
-    open_tsr_days: int
-    complete_tsr: bool
-    cnt_2022: int
-    cnt_2023: int
-    cnt_2024: int
-    cnt_2025: int
-    cnt_2026: int
-    
-    # Metadata
-    created_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
-    
 
 class TQIRecord(SQLModel, table=True):
     """Track Quality Indicator records."""
@@ -639,9 +679,14 @@ class AggTQI(SQLModel, table=True):
     # line_class: str = Field(max_length=10, index=True)  # main, bypass, loop
     tqi: float
     status: str
-    trend: Optional[str] = Field(default=None, max_length=20)      # improving / stable / degrading
-    trend_slope: Optional[float] = None                             # TQI units/year
+    trend: Optional[str] = Field(default=None, max_length=20)       # stable / degrading
+    trend_slope: Optional[float] = None                              # TQI units/year
     trend_r_squared: Optional[float] = None                         # goodness of fit [0-1]
+
+    # Step change detection
+    step_change_type: Optional[str] = Field(default=None, max_length=10)  # "failure" or "repair"
+    step_change_date: Optional[datetime] = None                      # date of most recent step change
+    trend_segment_start: Optional[datetime] = None                   # start of window used for the trend
     
     # Metadata
     collection_date: datetime = Field(index=True)
@@ -664,10 +709,15 @@ class SegmentTrend(SQLModel, table=True):
     computed_for_date: datetime = Field(index=True)          # as-of date: only data up to this date was used
     slope: Optional[float] = None                            # metric units/year (positive = improving)
     r_squared: Optional[float] = None                        # goodness of fit [0-1]
-    trend_label: Optional[str] = Field(default=None, max_length=20)  # improving / stable / degrading
+    trend_label: Optional[str] = Field(default=None, max_length=20)  # stable / degrading
     sample_count: int = Field(default=0)
     date_range_start: Optional[datetime] = None
     date_range_end: Optional[datetime] = None
+
+    # Step change detection
+    step_change_type: Optional[str] = Field(default=None, max_length=10)  # "failure" or "repair"
+    step_change_date: Optional[datetime] = None              # date of most recent step change
+    trend_segment_start: Optional[datetime] = None           # start of window used for the trend
 
     # Metadata
     computed_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))

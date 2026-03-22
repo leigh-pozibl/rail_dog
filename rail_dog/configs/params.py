@@ -188,6 +188,7 @@ class BaseParams:
 @dataclass
 class ExecutionParams:
     process_only: Optional[bool] = False
+    global_analysis_date: Optional[str] = None
 
 
 @dataclass

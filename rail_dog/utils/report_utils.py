@@ -16,8 +16,8 @@ from sqlalchemy import Engine
 from sqlalchemy.orm import Session
 from sqlmodel import select
 
-from rail_dog.configs.schema import RailSegment, AggAsset, AggGBFI, AggTSR, AggTQI
-from rail_dog.utils.db_utils import get_table_data
+from rail_dog.configs.schema import RailSegment, AggAsset, AggGBFI, AggTQI
+from rail_dog.utils.db_utils import get_table_data, query_agg_tsr
 
 
 def generate_excel_report(
@@ -52,12 +52,18 @@ def generate_excel_report(
     segments_df = get_table_data(engine, table_name="rail_segments")
     agg_asset_df = get_table_data(engine, table_name="agg_assets")
     agg_gbfi_df = get_table_data(engine, table_name="agg_gbfi")
-    agg_tsr_df = get_table_data(engine, table_name="agg_tsr")
+    agg_tsr_df = query_agg_tsr(engine)
     agg_tqi_df = get_table_data(engine, table_name="agg_tqi")
     agg_dtr_df = get_table_data(engine, table_name="agg_dtr")
+    agg_tg_df = get_table_data(engine, query="SELECT chainage_id, avg_speed FROM agg_tg")
 
     # Remove geometry and metadata columns from segments for Excel export
     segments_export = segments_df.drop(columns=['geometry', 'created_at', 'id'], errors='ignore')
+
+    # Map avg_speed from agg_tg onto segments
+    if not agg_tg_df.empty and 'avg_speed' in agg_tg_df.columns:
+        speed_map = agg_tg_df.set_index('chainage_id')['avg_speed']
+        segments_export['speed'] = segments_export['chainage_id'].map(speed_map)
 
     # Remove id and created_at from agg tables
     agg_asset_export = agg_asset_df.drop(columns=['id', 'created_at'], errors='ignore')
@@ -65,6 +71,7 @@ def generate_excel_report(
     agg_tsr_export = agg_tsr_df.drop(columns=['id', 'created_at'], errors='ignore')
     agg_tqi_export = agg_tqi_df.drop(columns=['id', 'collection_date', 'created_at'], errors='ignore')
     agg_dtr_export = agg_dtr_df.drop(columns=['id', 'collection_date', 'created_at'], errors='ignore')
+    # agg_tg_export = agg_tg_df[['chainage_id', 'avg_speed']].copy() if 'avg_speed' in agg_tg_df.columns else agg_tg_df[['chainage_id']].copy()
 
     # Create Excel writer
     with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
@@ -272,7 +279,7 @@ def generate_powerbi_export(
     logging.info("Loading aggregated data...")
     agg_asset_df = get_table_data(engine, table_name="agg_assets")
     agg_gbfi_df = get_table_data(engine, table_name="agg_gbfi")
-    agg_tsr_df = get_table_data(engine, table_name="agg_tsr")
+    agg_tsr_df = query_agg_tsr(engine)
     agg_tqi_df = get_table_data(engine, table_name="agg_tqi")
 
     # Export individual CSV files (without geometry, for Power BI relationships)
@@ -426,7 +433,7 @@ def generate_condition_summary(engine: Engine) -> pd.DataFrame:
     # Load all data
     segments_df = get_table_data(engine, table_name="rail_segments")
     agg_gbfi_df = get_table_data(engine, table_name="agg_gbfi")
-    agg_tsr_df = get_table_data(engine, table_name="agg_tsr")
+    agg_tsr_df = query_agg_tsr(engine)
     agg_tqi_df = get_table_data(engine, table_name="agg_tqi")
 
     # Join on chainage_id

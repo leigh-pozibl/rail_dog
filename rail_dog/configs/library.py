@@ -325,3 +325,26 @@ def get_section_metadata(asset_name: str):
 VALID_LINE_PREFIX = {
     "MLB", "MLW", "MLE", "ELB", "ELW", "EL1", "SLB", "SLW", "SLE", "SML", "SPW", "SPE", "PTW", "CCL", "CBM", "PTE",
 }
+
+
+# used in score for Fixed Asset Prioritisation
+REGION_PRIORITY = {
+    "Thomas": 2,
+    "Barker": 2,
+    "Chapman": 2,
+    "Forrest-I": 2,
+    "Forrest-II": 2,
+    "Gibb": 2,
+    "Nunna": 1,
+    "Morgan": 1,
+    "Cloudbreak": 1,
+    "Jones": 0,
+    "Nunna-2": 1,
+    "Avon": 1,
+    "Bow": 1,
+    "Capel": 1,
+    "Firetail": 1,
+    "De Grey": 0,
+    "Duck": 0,
+    "Eliwana": 0,
+}

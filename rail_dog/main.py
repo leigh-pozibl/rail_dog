@@ -71,8 +71,14 @@ def main(config, db_env, project_id, output_dir, json_input):
     report_dir = os.path.join(params.output_dir, "reports")
     if not os.path.exists(report_dir):
         os.mkdir(report_dir)
-    # generate_excel_report(db.engine, report_dir)
-    model = Report(db.engine, report_dir)
+    
+    mapbox_token = os.environ.get("MAPBOX_TOKEN", "")
+
+    if params.execution.global_analysis_date:
+        logging.info(f"Using global date from execution config: {params.execution.global_analysis_date}")
+        model = Report(db.engine, report_dir, global_date=params.execution.global_analysis_date, mapbox_token=mapbox_token)
+    else:
+        model = Report(db.engine, report_dir, analysis_dates=params.base_data.analysis_dates, mapbox_token=mapbox_token)
     model.write_excel_report()
 
 

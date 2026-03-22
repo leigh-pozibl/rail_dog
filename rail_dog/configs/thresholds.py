@@ -225,9 +225,7 @@ PRIORITY_THRESHOLDS = {
     "priority_norm_curve": 2,
     # Speed thresholds
     "priority_speed_low": 45,
-    "priority_speed_high": 65,
-    "priority_speed_min": 0,
-    "priority_speed_mid": 46,
+    "priority_speed_med": 65,
     # LX priority weights
     "priority_lx_weight_fixed_asset": 0.3,
     "priority_lx_weight_tsr": 0.25,
@@ -239,7 +237,7 @@ PRIORITY_THRESHOLDS = {
     "priority_lx_norm_tsr": 1,
     "priority_lx_norm_dtf": 2,
     "priority_lx_norm_dtf_worse": 1,
-    "priority_lx_norm_speed": 0.15,
+    "priority_lx_norm_speed": 2,
     
 }
 

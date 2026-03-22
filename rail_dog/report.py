@@ -7,8 +7,9 @@ from openpyxl.styles import Font, Alignment, PatternFill
 from openpyxl.utils import get_column_letter
 from sqlalchemy import Engine
 
-from rail_dog.utils.db_utils import get_table_data
+from rail_dog.utils.db_utils import get_table_data, query_agg_tsr
 from rail_dog.configs.thresholds import PLAINLINE_TREATMENT_THRESHOLDS, LX_TREATMENT_THRESHOLDS, IRJ_TREATMENT_THRESHOLDS, TURNOUT_TREATMENT_THRESHOLDS, BRIDGE_TREATMENT_THRESHOLDS, PRIORITY_THRESHOLDS
+from rail_dog.configs.library import REGION_PRIORITY
 
 
 class RuleEngine:
@@ -274,21 +275,76 @@ class RuleEngine:
 
 
 class Report():
-    def __init__(self, engine: Engine, output_path: str):
+    def __init__(
+        self,
+        engine: Engine,
+        output_path: str,
+        analysis_dates: Optional[dict] = None,
+        global_date=None,
+        mapbox_token: str = "",
+    ):
         """
         Args:
             engine: database engine
             output_path: Path to save the Excel file
+            analysis_dates: Per-type dates keyed by data type, e.g.
+                            {"GBFI": datetime(...), "TQI": datetime(...), "TG": datetime(...), ...}
+                            Typically sourced from base_data.analysis_dates in the config.
+            global_date: Fallback date used for any type not present in analysis_dates.
+                         If neither is provided no date filter is applied.
         """
         self.engine = engine
         self.output_path = output_path
-        
+        self.analysis_dates = analysis_dates or {}
+        self.global_date = global_date
+        self.mapbox_token = mapbox_token
+
         self.export_data = {}
-        
+
         self.cols_list = list()  # Will be set after merging data, used for column letter lookups in formulas
-        
+
         self.generate_report()
-    
+
+    def _date_query(self, table: str, key: str, cols: str = "*") -> str:
+        """Build a SELECT query with an optional collection_date filter.
+
+        - Specific date in analysis_dates: exact match on collection_date.
+        - global_date fallback: most recent record per chainage_id up to and
+          including global_date (DISTINCT ON keeps only the latest row).
+        - No date configured: no filter, all rows returned.
+        """
+        if key in self.analysis_dates:
+            date_str = str(self.analysis_dates[key])[:10]
+            return f"SELECT {cols} FROM {table} WHERE collection_date = '{date_str}'"
+
+        if self.global_date:
+            date_str = str(self.global_date)[:10]
+            return (
+                f"SELECT {cols} FROM {table} "
+                f"WHERE collection_date = ("
+                f"SELECT MAX(collection_date) FROM {table} WHERE collection_date <= '{date_str}'"
+                f")"
+            )
+
+        return f"SELECT {cols} FROM {table}"
+
+    def _check_date_load(self, df: pd.DataFrame, table: str, key: str):
+        """Raise if a date-filtered query returned no rows."""
+        if not df.empty:
+            return
+        if key in self.analysis_dates:
+            date_str = str(self.analysis_dates[key])[:10]
+            raise ValueError(
+                f"No data found in '{table}' for analysis date {date_str} (key '{key}'). "
+                f"Check analysis_dates config or verify data has been loaded for this date."
+            )
+        if self.global_date:
+            date_str = str(self.global_date)[:10]
+            raise ValueError(
+                f"No data found in '{table}' up to global_date {date_str}. "
+                f"Verify data has been loaded for this date."
+            )
+
     def find_plainline_treatment(self, segments_df: pd.DataFrame) -> pd.Series:
         """
         Apply plainline treatment recommendation rules to segment data.
@@ -887,22 +943,59 @@ class Report():
         logging.info("Loading data from database...")
         segments_df = get_table_data(self.engine, table_name="rail_segments")
         agg_asset_df = get_table_data(self.engine, table_name="agg_assets")
-        agg_gbfi_df = get_table_data(self.engine, table_name="agg_gbfi")
-        agg_ballast_df = get_table_data(self.engine, table_name="agg_ballast")
-        agg_tsr_df = get_table_data(self.engine, table_name="agg_tsr")
-        agg_tqi_df = get_table_data(self.engine, table_name="agg_tqi")
-        agg_dtr_df = get_table_data(self.engine, table_name="agg_dtr")
+        agg_gbfi_df = get_table_data(self.engine, query=self._date_query("agg_gbfi", "GBFI"))
+        self._check_date_load(agg_gbfi_df, "agg_gbfi", "GBFI")
+        agg_ballast_df = get_table_data(self.engine, query=self._date_query("agg_ballast", "BALL"))
+        self._check_date_load(agg_ballast_df, "agg_ballast", "BALL")
+        agg_moisture_df = get_table_data(self.engine, query=self._date_query("agg_moisture", "MOI"))
+        self._check_date_load(agg_moisture_df, "agg_moisture", "MOI")
+        agg_tsr_df = query_agg_tsr(self.engine, as_of_date=self.analysis_dates.get("TSR") or self.global_date)
+        agg_tqi_df = get_table_data(self.engine, query=self._date_query("agg_tqi", "TQI"))
+        self._check_date_load(agg_tqi_df, "agg_tqi", "TQI")
+        agg_tqi_all_df = get_table_data(self.engine, table_name="agg_tqi")
+
+        # Trend fields are stored directly in agg_tqi per collection_date.
+        # Ensure columns are present in case TQI data has no trend yet.
+        _trend_cols = ['trend', 'trend_slope', 'trend_r_squared',
+                       'step_change_type', 'step_change_date', 'trend_segment_start']
+        for _col in _trend_cols:
+            if _col not in agg_tqi_df.columns:
+                agg_tqi_df[_col] = None
+            if _col not in agg_tqi_all_df.columns:
+                agg_tqi_all_df[_col] = None
+        agg_dtr_df = get_table_data(self.engine, query=self._date_query("agg_dtr", "DTR"))
+        self._check_date_load(agg_dtr_df, "agg_dtr", "DTR")
+        agg_tg_df = get_table_data(self.engine, query=self._date_query("agg_tg", "TG", cols="chainage_id, avg_speed"))
+        self._check_date_load(agg_tg_df, "agg_tg", "TG")
 
         # Remove geometry and metadata columns from segments for Excel export
         self.export_data["segments"] = segments_df.drop(columns=['geometry', 'created_at', 'id'], errors='ignore')
+        
+        # Map avg_speed from agg_tg onto segments (column always present, populated when data available)
+        self.export_data["segments"]['speed'] = None
+        if not agg_tg_df.empty and 'avg_speed' in agg_tg_df.columns:
+            speed_map = agg_tg_df.set_index('chainage_id')['avg_speed']
+            self.export_data["segments"]['speed'] = self.export_data["segments"]['chainage_id'].map(speed_map)
 
         # Remove id and created_at from agg tables
         self.export_data["agg_asset"] = agg_asset_df.drop(columns=['id', 'created_at'], errors='ignore')
         # Also drop ballast_centre/ballast_lt_250mm - these should only come from agg_ballast
         self.export_data["agg_gbfi"] = agg_gbfi_df.drop(columns=['id', 'collection_date', 'created_at', 'ballast_centre', 'ballast_lt_250mm'], errors='ignore')
         self.export_data["agg_ballast"] = agg_ballast_df.drop(columns=['id', 'collection_date', 'created_at'], errors='ignore')
+        self.export_data["agg_moisture"] = agg_moisture_df[['chainage_id', 'max_of_avg', 'avg_of_avg']] if not agg_moisture_df.empty else agg_moisture_df
         self.export_data["agg_tsr"] = agg_tsr_df.drop(columns=['id', 'created_at'], errors='ignore')
         self.export_data["agg_tqi"] = agg_tqi_df.drop(columns=['id', 'collection_date', 'created_at'], errors='ignore')
+        # Explicit column order — formula in write_tqi_trend_tab assumes A=chainage_id, B=collection_date, C=tqi
+        # Join lat/lng from segments for map support
+        seg_coords = segments_df[['chainage_id', 'mid_coord_lat', 'mid_coord_lng']].drop_duplicates('chainage_id')
+        self.export_data["agg_tqi_all"] = (
+            agg_tqi_all_df[['chainage_id', 'collection_date', 'tqi', 'status',
+                            'trend', 'trend_slope', 'trend_r_squared',
+                            'step_change_type', 'step_change_date', 'trend_segment_start']]
+            .merge(seg_coords, on='chainage_id', how='left')
+            .sort_values(['chainage_id', 'collection_date'])
+            .reset_index(drop=True)
+        )
         self.export_data["agg_dtr"] = agg_dtr_df.drop(columns=['id', 'collection_date', 'created_at'], errors='ignore')
 
         # OPTIMIZATION: Pre-merge all aggregated data with segments for faster rule evaluation
@@ -924,7 +1017,7 @@ class Report():
             right_on='agg_gbfi.chainage_id',
             how='left'
         ).drop(columns=['agg_gbfi.chainage_id'], errors='ignore')
-
+        
         # Add ballast fields
         merged_df = merged_df.merge(
             self.export_data["agg_ballast"].add_prefix('agg_ballast.'),
@@ -932,6 +1025,15 @@ class Report():
             right_on='agg_ballast.chainage_id',
             how='left'
         ).drop(columns=['agg_ballast.chainage_id'], errors='ignore')
+
+        # Add moisture fields
+        if not self.export_data["agg_moisture"].empty:
+            merged_df = merged_df.merge(
+                self.export_data["agg_moisture"].add_prefix('agg_moisture.'),
+                left_on='chainage_id',
+                right_on='agg_moisture.chainage_id',
+                how='left'
+            ).drop(columns=['agg_moisture.chainage_id'], errors='ignore')
 
         # Add TSR fields
         merged_df = merged_df.merge(
@@ -983,31 +1085,8 @@ class Report():
             'bridge_treatment_final': None,  # Will be replaced with Excel formula
         })
 
-        # COMMENTED OUT: Calculate in Excel instead for dynamic updates when users override treatments
-        # Calculate problem_zone: 1 if any treatment is not "No Treatment", 0 otherwise
-        # Excel formula: =IF(OR(final_col1<>"No Treatment", final_col2<>"No Treatment", ...), 1, 0)
-        # recommendations_df['problem_zone'] = (
-        #     (recommendations_df['plainline_treatment_model'] != "No Treatment") |
-        #     (recommendations_df['lx_treatment_model'] != "No Treatment") |
-        #     (recommendations_df['irj_treatment_model'] != "No Treatment") |
-        #     (recommendations_df['turnout_treatment_model'] != "No Treatment") |
-        #     (recommendations_df['bridge_treatment_model'] != "No Treatment")
-        # ).astype(int)
         recommendations_df['problem_zone'] = None  # Will be replaced with Excel formula
-
-        # COMMENTED OUT: Calculate in Excel instead for dynamic updates
-        # Calculate problem_zone_group: consecutive problem zones get the same group number
-        # Excel formula: =IF(BM2=0, "", IF(COUNTA($BN$1:BN1)=0, 1, IF(BM1=1, BN1, MAXIFS($BN$1:BN1, $BM$1:BM1, 1)+1)))
-        # recommendations_df['problem_zone_group'] = self.calculate_problem_zone_group(recommendations_df)
         recommendations_df['problem_zone_group'] = None  # Will be replaced with Excel formula
-
-        # COMMENTED OUT: Calculate in Excel instead for dynamic updates
-        # Calculate problem_zone_length_m: total chainage length for each group
-        # Excel formula: =SUMIF($problem_zone_group_col, problem_zone_group, $segment_length_col)
-        # recommendations_df['problem_zone_length_m'] = self.calculate_problem_zone_length(
-        #     recommendations_df,
-        #     segments_df
-        # )
         recommendations_df['problem_zone_length_m'] = None  # Will be replaced with Excel formula
 
         # Priority scoring columns - will be replaced with Excel formulas
@@ -1132,9 +1211,104 @@ class Report():
         length_series = merged['problem_zone_group'].map(group_lengths)
 
         # Set None for rows without a problem_zone_group
-        length_series = length_series.where(merged['problem_zone_group'].notna(), None)
+        length_series = length_series.where(merged['problem_zone_group'].notna(), other=float('nan'))
 
         return length_series
+
+    def _get_actual_collection_date(self, table: str, key: str, date_col: str = "collection_date") -> str:
+        """Return the actual collection date used for a given table and key.
+
+        - Specific date in analysis_dates: returns that date directly (exact match query).
+        - global_date fallback: queries MAX(date_col) <= global_date (single snapshot date).
+        - No date configured: returns 'N/A (all records)'.
+        """
+        from sqlalchemy import text as sa_text
+        if key in self.analysis_dates:
+            return str(self.analysis_dates[key])[:10]
+        if self.global_date:
+            date_str = str(self.global_date)[:10]
+            with self.engine.connect() as conn:
+                result = conn.execute(
+                    sa_text(f"SELECT MAX({date_col}) FROM {table} WHERE {date_col} <= '{date_str}'")
+                ).scalar()
+            return str(result)[:10] if result else "N/A"
+        return "N/A (all records)"
+
+    def write_data_sources_tab(self, writer: pd.ExcelWriter):
+        """Write a summary tab listing each data source, its collection date, and age."""
+        analysis_date_str = str(self.global_date)[:10] if self.global_date else "N/A"
+
+        def _age(collection_date_str: str, key: str) -> str:
+            if collection_date_str in ("N/A", "N/A (all records)"):
+                return "N/A"
+            ref = self.analysis_dates.get(key) or self.global_date
+            if not ref:
+                return "N/A"
+            try:
+                col_date = pd.to_datetime(collection_date_str).date()
+                ref_date = pd.to_datetime(str(ref)[:10]).date()
+                return f"{(ref_date - col_date).days} days"
+            except Exception:
+                return "N/A"
+
+        sources = [
+            ("rail_segments",  "rail_segments", None,  None),
+            ("agg_assets",     "agg_assets",    None,  None),
+            ("GBFI",           "agg_gbfi",      "GBFI", "collection_date"),
+            ("Ballast",        "agg_ballast",   "BALL", "collection_date"),
+            ("Moisture",       "agg_moisture",  "MOI",  "collection_date"),
+            ("TSR",            "tsr_records",   "TSR",  "report_date", "<="),
+            ("TQI",            "agg_tqi",       "TQI",  "collection_date"),
+            ("DTR",            "agg_dtr",       "DTR",  "collection_date"),
+            ("Track Geometry", "agg_tg",        "TG",   "collection_date"),
+        ]
+
+        def _record_count(table: str, key: str, date_col: str, col_date: str, count_op: str = "=") -> str:
+            from sqlalchemy import text as sa_text
+            try:
+                if col_date in ("N/A", "N/A (all records)"):
+                    with self.engine.connect() as conn:
+                        return str(conn.execute(sa_text(f"SELECT COUNT(*) FROM {table}")).scalar())
+                if count_op == "<=" and key:
+                    configured = self.analysis_dates.get(key) or self.global_date
+                    count_date = pd.to_datetime(str(configured)[:10]).strftime("%Y-%m-%d") if configured else col_date
+                else:
+                    count_date = col_date
+                with self.engine.connect() as conn:
+                    return str(conn.execute(
+                        sa_text(f"SELECT COUNT(*) FROM {table} WHERE {date_col} {count_op} '{count_date}'")
+                    ).scalar())
+            except Exception:
+                return "N/A"
+
+        rows = []
+        for label, table, key, date_col, *opts in sources:
+            count_op = opts[0] if opts else "="
+            if key is None:
+                col_date = "N/A (all records)"
+            else:
+                col_date = self._get_actual_collection_date(table, key, date_col=date_col)
+            rows.append({
+                "Data Source":     label,
+                "Table":           table,
+                "Collection Date": col_date,
+                "Record Count":    _record_count(table, key, date_col, col_date, count_op),
+                "Age":             _age(col_date, key) if key else "N/A",
+            })
+
+        df = pd.DataFrame(rows)
+        df.to_excel(writer, sheet_name="Data Sources", index=False, startrow=2)
+
+        worksheet = writer.sheets["Data Sources"]
+
+        # Header row
+        worksheet["A1"] = f"Analysis Date: {analysis_date_str}"
+        worksheet["A1"].font = Font(bold=True, size=12)
+
+        # Column widths and bold headers
+        for col, width in [("A", 20), ("B", 20), ("C", 20), ("D", 15), ("E", 15)]:
+            worksheet.column_dimensions[col].width = width
+            worksheet[f"{col}3"].font = Font(bold=True, size=11)
 
     def write_thresholds_tab(self, writer: pd.ExcelWriter):
         """
@@ -1309,6 +1483,17 @@ class Report():
         turnout_formula_col = self._get_col_letter('turnout_treatment_formula')
         bridge_formula_col = self._get_col_letter('bridge_treatment_formula')
 
+        # Log any missing source columns so it's clear why formulas may be skipped
+        missing = [name for name, val in {
+            'fixed_asset': fixed_asset, 'status': status, 'max_of_avg': max_of_avg,
+            'avg_of_avg': avg_of_avg, 'ballast_centre': ballast_centre, 'worst_dtf': worst_dtf,
+            'complete_tsr': complete_tsr, 'wz_level_crossing': wz_level_crossing,
+            'level_crossing': level_crossing, 'irj': irj, 'wz_turnout': wz_turnout,
+            'wz_bridge': wz_bridge,
+        }.items() if val is None]
+        if missing:
+            logging.warning(f"Treatment formula columns missing source data columns: {missing}")
+
         # Write formulas for each row (starting at row 3: row 1 = merged header, row 2 = column names)
         for row_num in range(3, len(merged) + 3):
             # Plainline treatment formula
@@ -1383,11 +1568,11 @@ class Report():
             return f'INDEX(Thresholds!$C:$C,MATCH("{threshold_name}",Thresholds!$B:$B,0))'
 
         # Get column letters for source data fields
-        complete_tsr = self._get_col_letter('complete_tsr')
+        open_tsr = self._get_col_letter('open_tsr')
         worst_dtf = self._get_col_letter('worst_dtf')
         tqi_status = self._get_col_letter('status')
         tqi_trend = self._get_col_letter('trend')
-        max_speed = self._get_col_letter('max_speed')
+        max_speed = self._get_col_letter('speed')
         curve_type = self._get_col_letter('curve_type')
         plainline_final = self._get_col_letter('plainline_treatment_final')
 
@@ -1400,7 +1585,7 @@ class Report():
         p_curve = self._get_col_letter('priority_curve')
         p_score = self._get_col_letter('priority_score')
 
-        if not all([complete_tsr, worst_dtf, tqi_status, tqi_trend, max_speed, curve_type,
+        if not all([open_tsr, worst_dtf, tqi_status, tqi_trend, max_speed, curve_type,
                     plainline_final, p_tsr, p_dtf, p_tqi_status, p_tqi_trend, p_speed, p_curve, p_score]):
             logging.warning("Missing columns for priority formulas, skipping")
             return
@@ -1410,26 +1595,26 @@ class Report():
 
             # priority_tsr: No=0, else 1
             worksheet[f'{p_tsr}{r}'] = (
-                f'=IF({complete_tsr}{r}="No",0,1)'
+                f'=IF({open_tsr}{r}="No",0,1)'
             )
 
             # priority_dtf: N/A or S3=0, S2=1, S1=2
             worksheet[f'{p_dtf}{r}'] = (
-                f'=IFS(OR({worst_dtf}{r}="N/A",{worst_dtf}{r}="S3"),0,'
+                f'=_xlfn.IFS(OR({worst_dtf}{r}="",{worst_dtf}{r}="S3"),0,'
                 f'{worst_dtf}{r}="S2",1,'
                 f'{worst_dtf}{r}="S1",2)'
             )
 
             # priority_tqi_status: good/satisfactory=0, poor=1, critical=2
             worksheet[f'{p_tqi_status}{r}'] = (
-                f'=IFS(OR({tqi_status}{r}="good",{tqi_status}{r}="satisfactory"),0,'
+                f'=_xlfn.IFS(OR({tqi_status}{r}="good",{tqi_status}{r}="satisfactory", {tqi_status}{r}=""),0,'
                 f'{tqi_status}{r}="poor",1,'
                 f'{tqi_status}{r}="critical",2)'
             )
 
             # priority_tqi_trend: blank/recent tamp=0, stable=1, degrading=2, repetition=3
             worksheet[f'{p_tqi_trend}{r}'] = (
-                f'=IFS(OR({tqi_trend}{r}="",{tqi_trend}{r}="recent tamp"),0,'
+                f'=_xlfn.IFS(OR({tqi_trend}{r}="",{tqi_trend}{r}="recent tamp", {tqi_trend}{r}="improving"),0,'
                 f'{tqi_trend}{r}="stable",1,'
                 f'{tqi_trend}{r}="degrading",2,'
                 f'{tqi_trend}{r}="repetition",3)'
@@ -1437,18 +1622,17 @@ class Report():
 
             # priority_speed: threshold-based scoring
             worksheet[f'{p_speed}{r}'] = (
-                f'=IFS({max_speed}{r}="",0,'
-                f'{max_speed}{r}<{th("priority_speed_low")},0,'
-                f'{max_speed}{r}<{th("priority_speed_high")},1,'
-                f'({max_speed}{r}>={th("priority_speed_min")})*({max_speed}{r}<{th("priority_speed_mid")}),1,'
-                f'{max_speed}{r}>={th("priority_speed_mid")},2)'
+                f'=_xlfn.IFS({max_speed}{r}="",0,'
+                f'{max_speed}{r}<={th("priority_speed_low")},0,'
+                f'{max_speed}{r}<={th("priority_speed_med")},1,'
+                f'{max_speed}{r}>{th("priority_speed_med")},2)'
             )
 
             # priority_curve: tangent=0, mild curve=1, sharp curve=2
             worksheet[f'{p_curve}{r}'] = (
-                f'=IFS({curve_type}{r}="tangent",0,'
-                f'{curve_type}{r}="mild curve",1,'
-                f'{curve_type}{r}="sharp curve",2)'
+                f'=_xlfn.IFS({curve_type}{r}="tangent",0,'
+                f'{curve_type}{r}="mild_curve",1,'
+                f'OR({curve_type}{r}="sharp_curve", {curve_type}{r}="spiral_entry", {curve_type}{r}="spiral_exit"),2)'
             )
 
             # Aggregated priority score: weighted normalized sum, 0 if no treatment
@@ -1495,10 +1679,9 @@ class Report():
                 f'=IF({getting_worse}{r}>0,1,0)'
             )
 
-            # priority_fixed_asset: 1 if fixed_asset is TRUE, else 0
-            worksheet[f'{p_fixed_asset}{r}'] = (
-                f'=IF({fixed_asset}{r}=TRUE,1,0)'
-            )
+            # priority_fixed_asset: region priority (0/1/2) based on section_name from REGION_PRIORITY
+            section_name = merged.iloc[row_num - 3]['section_name'] if 'section_name' in merged.columns else ''
+            worksheet[f'{p_fixed_asset}{r}'] = REGION_PRIORITY.get(section_name, 0)
 
             # priority_lx_score: weighted normalized sum, 0 if lx treatment is "No Treatment"
             worksheet[f'{p_lx_score}{r}'] = (
@@ -1514,10 +1697,10 @@ class Report():
             # priority_irj_score: weighted normalized sum, 0 if irj treatment is "No Treatment"
             worksheet[f'{p_irj_score}{r}'] = (
                 f'=IF({irj_final}{r}<>"No Treatment",'
-                f'({p_dtf_worse}{r}/{th("priority_lx_norm_dtf_worse")})*{th("priority_lx_weight_dtf_worse")}+'
+                f'({p_fixed_asset}{r}/{th("priority_lx_norm_fixed_asset")})*{th("priority_lx_weight_fixed_asset")}+'
                 f'({p_tsr}{r}/{th("priority_lx_norm_tsr")})*{th("priority_lx_weight_tsr")}+'
                 f'({p_dtf}{r}/{th("priority_lx_norm_dtf")})*{th("priority_lx_weight_dtf")}+'
-                f'({p_fixed_asset}{r}/{th("priority_lx_norm_fixed_asset")})*{th("priority_lx_weight_fixed_asset")}+'
+                f'({p_dtf_worse}{r}/{th("priority_lx_norm_dtf_worse")})*{th("priority_lx_weight_dtf_worse")}+'
                 f'({p_speed}{r}/{th("priority_lx_norm_speed")})*{th("priority_lx_weight_speed")},'
                 f'0)'
             )
@@ -1525,10 +1708,10 @@ class Report():
             # priority_turnout_score: weighted normalized sum, 0 if turnout treatment is "No Treatment"
             worksheet[f'{p_turnout_score}{r}'] = (
                 f'=IF({turnout_final}{r}<>"No Treatment",'
-                f'({p_dtf_worse}{r}/{th("priority_lx_norm_dtf_worse")})*{th("priority_lx_weight_dtf_worse")}+'
+                f'({p_fixed_asset}{r}/{th("priority_lx_norm_fixed_asset")})*{th("priority_lx_weight_fixed_asset")}+'
                 f'({p_tsr}{r}/{th("priority_lx_norm_tsr")})*{th("priority_lx_weight_tsr")}+'
                 f'({p_dtf}{r}/{th("priority_lx_norm_dtf")})*{th("priority_lx_weight_dtf")}+'
-                f'({p_fixed_asset}{r}/{th("priority_lx_norm_fixed_asset")})*{th("priority_lx_weight_fixed_asset")}+'
+                f'({p_dtf_worse}{r}/{th("priority_lx_norm_dtf_worse")})*{th("priority_lx_weight_dtf_worse")}+'
                 f'({p_speed}{r}/{th("priority_lx_norm_speed")})*{th("priority_lx_weight_speed")},'
                 f'0)'
             )
@@ -1536,10 +1719,10 @@ class Report():
             # priority_bridge_score: weighted normalized sum, 0 if bridge treatment is "No Treatment"
             worksheet[f'{p_bridge_score}{r}'] = (
                 f'=IF({bridge_final}{r}<>"No Treatment",'
-                f'({p_dtf_worse}{r}/{th("priority_lx_norm_dtf_worse")})*{th("priority_lx_weight_dtf_worse")}+'
+                f'({p_fixed_asset}{r}/{th("priority_lx_norm_fixed_asset")})*{th("priority_lx_weight_fixed_asset")}+'
                 f'({p_tsr}{r}/{th("priority_lx_norm_tsr")})*{th("priority_lx_weight_tsr")}+'
                 f'({p_dtf}{r}/{th("priority_lx_norm_dtf")})*{th("priority_lx_weight_dtf")}+'
-                f'({p_fixed_asset}{r}/{th("priority_lx_norm_fixed_asset")})*{th("priority_lx_weight_fixed_asset")}+'
+                f'({p_dtf_worse}{r}/{th("priority_lx_norm_dtf_worse")})*{th("priority_lx_weight_dtf_worse")}+'
                 f'({p_speed}{r}/{th("priority_lx_norm_speed")})*{th("priority_lx_weight_speed")},'
                 f'0)'
             )
@@ -1550,7 +1733,157 @@ class Report():
             )
 
         logging.info("Added priority formula columns")
-        
+
+    def write_tqi_trend_tab(self, writer: pd.ExcelWriter):
+        """Write TQI Trend Data and TQI Trend Chart tabs."""
+        from openpyxl.chart import ScatterChart, Reference, Series
+        from openpyxl.worksheet.datavalidation import DataValidation
+
+        tqi_all = self.export_data.get("agg_tqi_all")
+        if tqi_all is None or tqi_all.empty:
+            logging.warning("No TQI history data — skipping trend tabs")
+            return
+
+        # --- Sheet 1: TQI Trend Data (all history, flat) ---
+        data_sheet_name = "TQI Trend Data"
+        tqi_all.to_excel(writer, sheet_name=data_sheet_name, index=False)
+        ws_data = writer.sheets[data_sheet_name]
+        data_last_row = len(tqi_all) + 1  # row 1 = headers, rows 2..N+1 = data
+
+        for col in range(1, len(tqi_all.columns) + 1):
+            ws_data.cell(row=1, column=col).font = Font(bold=True)
+        ws_data.column_dimensions['A'].width = 35
+        ws_data.column_dimensions['B'].width = 18
+        ws_data.freeze_panes = 'A2'
+        ws_data.auto_filter.ref = f"A1:{get_column_letter(len(tqi_all.columns))}1"
+
+        # --- Sheet 2: TQI Trend Chart (selector + helper table + chart) ---
+        from openpyxl.workbook.defined_name import DefinedName
+
+        chart_sheet_name = "TQI Trend Chart"
+        wb = writer.book
+        ws_chart = wb.create_sheet(chart_sheet_name)
+
+        unique_dates = sorted(tqi_all['collection_date'].dropna().unique())
+
+        # Derive line code from chainage_id prefix (e.g. CHAIN-MLX-... → ML)
+        prefix_to_line = {'TLX': 'TL', 'MLX': 'ML', 'SML': 'SL', 'EML': 'EL'}
+        def _line_code(cid):
+            parts = cid.split('-')
+            prefix = parts[1] if len(parts) >= 2 else ''
+            return prefix_to_line.get(prefix, prefix)
+
+        tqi_ids = tqi_all[['chainage_id']].drop_duplicates().copy()
+        tqi_ids['line_code'] = tqi_ids['chainage_id'].apply(_line_code)
+        line_ids = {
+            lc: sorted(grp['chainage_id'].tolist())
+            for lc, grp in tqi_ids.groupby('line_code')
+        }
+        line_codes_sorted = sorted(line_ids.keys())
+
+        # Hidden column F: line code list for B1 dropdown
+        for i, lc in enumerate(line_codes_sorted):
+            ws_chart.cell(row=i + 1, column=6, value=lc)
+        lc_range = f"'{chart_sheet_name}'!$F$1:$F${len(line_codes_sorted)}"
+        ws_chart.column_dimensions['F'].hidden = True
+
+        # Hidden columns G onwards: one column per line code with its chainage_ids
+        # Named ranges (e.g. "ML") allow INDIRECT($B$1) to work as dependent dropdown
+        for col_offset, lc in enumerate(line_codes_sorted):
+            col = 7 + col_offset  # G, H, I, J ...
+            col_letter = get_column_letter(col)
+            ids = line_ids[lc]
+            for row_i, cid in enumerate(ids):
+                ws_chart.cell(row=row_i + 1, column=col, value=cid)
+            # Named range must exactly match the value in B1
+            range_ref = f"'{chart_sheet_name}'!${col_letter}$1:${col_letter}${len(ids)}"
+            wb.defined_names[lc] = DefinedName(lc, attr_text=range_ref)
+            ws_chart.column_dimensions[col_letter].hidden = True
+
+        # Row 1: line code selector
+        ws_chart['A1'] = "Select Line:"
+        ws_chart['A1'].font = Font(bold=True)
+        ws_chart['B1'] = line_codes_sorted[0] if line_codes_sorted else ""
+        dv_line = DataValidation(type="list", formula1=lc_range, allow_blank=False, showDropDown=False)
+        ws_chart.add_data_validation(dv_line)
+        dv_line.add(ws_chart['B1'])
+
+        # Row 2: chainage_id selector (depends on B1 via named range + INDIRECT)
+        ws_chart['A2'] = "Select Chainage ID:"
+        ws_chart['A2'].font = Font(bold=True)
+        first_lc = line_codes_sorted[0] if line_codes_sorted else ""
+        ws_chart['B2'] = line_ids[first_lc][0] if first_lc and line_ids[first_lc] else ""
+        dv_id = DataValidation(type="list", formula1="INDIRECT($B$1)", allow_blank=False, showDropDown=False)
+        ws_chart.add_data_validation(dv_id)
+        dv_id.add(ws_chart['B2'])
+
+        # Row 4: helper table headers; rows 5+ date/TQI/status/trend values
+        # agg_tqi column order: chainage_id(A), collection_date(B), tqi(C), status(D), trend(E), ...
+        for col, label in enumerate(["Date", "TQI", "Status", "Trend"], start=1):
+            cell = ws_chart.cell(row=4, column=col, value=label)
+            cell.font = Font(bold=True)
+
+        for i, raw_date in enumerate(unique_dates):
+            row = i + 5
+            date_val = raw_date.to_pydatetime() if hasattr(raw_date, 'to_pydatetime') else raw_date
+            cell = ws_chart.cell(row=row, column=1, value=date_val)
+            cell.number_format = 'YYYY-MM-DD'
+
+            # TQI (numeric) — SUMPRODUCT directly
+            tqi_formula = (
+                f"=IF(SUMPRODUCT(('{data_sheet_name}'!$A$2:$A${data_last_row}=$B$2)"
+                f"*('{data_sheet_name}'!$B$2:$B${data_last_row}=A{row}))=0,"
+                f"\"\",SUMPRODUCT(('{data_sheet_name}'!$A$2:$A${data_last_row}=$B$2)"
+                f"*('{data_sheet_name}'!$B$2:$B${data_last_row}=A{row})"
+                f"*('{data_sheet_name}'!$C$2:$C${data_last_row})))"
+            )
+            ws_chart.cell(row=row, column=2, value=tqi_formula)
+
+            # Status and Trend (text) — use SUMPRODUCT(*ROW())-1 to get row index, then INDEX
+            # SUMPRODUCT returns the absolute row number of the matched row; subtract 1 to
+            # convert to a 1-based position within the range (which starts at row 2).
+            row_idx = (
+                f"SUMPRODUCT(('{data_sheet_name}'!$A$2:$A${data_last_row}=$B$2)"
+                f"*('{data_sheet_name}'!$B$2:$B${data_last_row}=A{row})"
+                f"*ROW('{data_sheet_name}'!$A$2:$A${data_last_row}))-1"
+            )
+            for col, data_col in [(3, "D"), (4, "E")]:  # status=D, trend=E
+                formula = (
+                    f"=IFERROR(INDEX('{data_sheet_name}'!${data_col}$2:${data_col}${data_last_row},"
+                    f"{row_idx}),\"\")"
+                )
+                ws_chart.cell(row=row, column=col, value=formula)
+
+        # XY Scatter chart
+        last_helper_row = len(unique_dates) + 4
+        chart = ScatterChart()
+        chart.scatterStyle = "marker"
+        chart.title = "TQI Trend  —  select Line in B1, Chainage ID in B2"
+        chart.y_axis.title = "TQI"
+        chart.y_axis.delete = False
+        chart.x_axis.title = "Date"
+        chart.x_axis.delete = False
+        chart.x_axis.numFmt = "yyyy-mm"
+        chart.x_axis.sourceLinked = False
+        chart.x_axis.tickLblPos = "low"
+        chart.x_axis.majorTickMark = "out"
+        chart.width = 24
+        chart.height = 14
+
+        xvalues = Reference(ws_chart, min_col=1, min_row=5, max_row=last_helper_row)
+        yvalues = Reference(ws_chart, min_col=2, min_row=5, max_row=last_helper_row)
+        series = Series(yvalues, xvalues)
+        series.smooth = False
+        chart.series.append(series)
+
+        ws_chart.add_chart(chart, "D5")
+
+        ws_chart.column_dimensions['A'].width = 14
+        ws_chart.column_dimensions['B'].width = 35
+        ws_chart.freeze_panes = 'A5'
+
+        logging.info(f"TQI trend tabs written ({len(line_codes_sorted)} lines, {len(tqi_ids)} chainage IDs, {len(unique_dates)} dates)")
+
     def write_excel_report(self):
         """
         Generate an Excel workbook with one tab per line_code, joining all aggregated tables.
@@ -1558,14 +1891,17 @@ class Report():
         """
         logging.info("Generating Excel report...")
         
-        output_file = os.path.join(self.output_path, "fmg_rail_report.xlsx")
+        from datetime import date
+        output_file = os.path.join(self.output_path, f"fmg_rail_report_{date.today().strftime('%Y%m%d')}.xlsx")
         
         # Create Excel writer
         all_line_segments = self.export_data["segments"]
 
         with pd.ExcelWriter(output_file, engine='openpyxl') as writer:
-            # Write thresholds tab first
+            # Write summary tabs first
+            self.write_data_sources_tab(writer)
             self.write_thresholds_tab(writer)
+            self.write_tqi_trend_tab(writer)
             for line_code in self.line_codes:
                 logging.info(f"Processing line_code: {line_code}")
 
@@ -1616,6 +1952,17 @@ class Report():
                     )
                     ballast_cols = [col for col in merged.columns if col not in before_cols]
 
+                moisture_cols = []
+                if not self.export_data["agg_moisture"].empty:
+                    before_cols = set(merged.columns)
+                    merged = merged.merge(
+                        self.export_data["agg_moisture"],
+                        on='chainage_id',
+                        how='left',
+                        suffixes=('', '_moisture')
+                    )
+                    moisture_cols = [col for col in merged.columns if col not in before_cols]
+
                 tsr_cols = []
                 if not self.export_data["agg_tsr"].empty:
                     before_cols = set(merged.columns)
@@ -1637,6 +1984,12 @@ class Report():
                         suffixes=('', '_tqi')
                     )
                     tqi_cols = [col for col in merged.columns if col not in before_cols]
+
+                # Ensure trend columns are always present (may be absent if TQI data is empty)
+                for _col in ['trend', 'step_change_type', 'step_change_date', 'trend_segment_start']:
+                    if _col not in merged.columns:
+                        merged[_col] = None
+                        tqi_cols.append(_col)
                 
                 dtr_cols = []
                 if not self.export_data["agg_dtr"].empty:
@@ -1705,6 +2058,11 @@ class Report():
                     col_groups.append(('Ballast', start_col, end_col))
                     start_col = end_col + 1
 
+                if moisture_cols:
+                    end_col = start_col + len(moisture_cols) - 1
+                    col_groups.append(('Moisture', start_col, end_col))
+                    start_col = end_col + 1
+
                 if tsr_cols:
                     end_col = start_col + len(tsr_cols) - 1
                     col_groups.append(('Temporary Speed Restriction (TSR)', start_col, end_col))
@@ -1739,8 +2097,10 @@ class Report():
                 # Add Excel formulas to treatment final columns
                 self.cols_list = list(merged.columns)
 
-                # Helper function to add formulas for a treatment type
-                def add_treatment_formulas(model_col, override_col, final_col):
+                # Helper function to add formulas for a treatment type.
+                # If window > 0 and treatment_hierarchy is provided, the formula picks the most
+                # aggressive treatment seen across +/- window rows (smoothing over ~500m of track).
+                def add_treatment_formulas(model_col, override_col, final_col, window=0, treatment_hierarchy=None):
                     if model_col in merged.columns and override_col in merged.columns and final_col in merged.columns:
                         # Find column indices (1-indexed for Excel)
                         model_col_idx = self.cols_list.index(model_col) + 1
@@ -1752,13 +2112,40 @@ class Report():
                         override_col_letter = get_column_letter(override_col_idx)
                         final_col_letter = get_column_letter(final_col_idx)
 
-                        # Write formula to each row (starting at row 3, since row 1 is merged header, row 2 is column names)
-                        for row_num in range(3, len(merged) + 3):  # +3 because: 1 header row + 1 column name row + 1-indexed
-                            formula = f'=IF(ISBLANK({override_col_letter}{row_num}),{model_col_letter}{row_num},{override_col_letter}{row_num})'
+                        first_row = 3  # row 1 = merged header, row 2 = column names
+                        last_row = len(merged) + 2
+
+                        # Write formula to each row
+                        for row_num in range(first_row, last_row + 1):
+                            if window > 0 and treatment_hierarchy:
+                                # Clamp window to data bounds
+                                start_row = max(first_row, row_num - window)
+                                end_row = min(last_row, row_num + window)
+                                range_str = f'{model_col_letter}{start_row}:{model_col_letter}{end_row}'
+
+                                # Build nested IF using COUNTIF, most aggressive first
+                                # Default to the last (least aggressive) treatment
+                                inner = f'"{treatment_hierarchy[-1]}"'
+                                for treatment in reversed(treatment_hierarchy[:-1]):
+                                    inner = f'IF(COUNTIF({range_str},"{treatment}")>0,"{treatment}",{inner})'
+
+                                formula = f'=IF(ISBLANK({override_col_letter}{row_num}),{inner},{override_col_letter}{row_num})'
+                            else:
+                                formula = f'=IF(ISBLANK({override_col_letter}{row_num}),{model_col_letter}{row_num},{override_col_letter}{row_num})'
+
                             worksheet[f'{final_col_letter}{row_num}'] = formula
 
-                # Add formulas for plainline treatment
-                add_treatment_formulas('plainline_treatment_model', 'plainline_treatment_override', 'plainline_treatment_final')
+                PLAINLINE_TREATMENT_HIERARCHY = [
+                    "Local Formation Renewal (Bog Hole)",
+                    "Ballast Clean",
+                    "Lift & Tamp",
+                    "Tamp Only",
+                    "No Treatment",
+                ]
+
+                # Add formulas for plainline treatment (windowed: picks most aggressive in +/- 2 segments)
+                add_treatment_formulas('plainline_treatment_model', 'plainline_treatment_override', 'plainline_treatment_final',
+                                       window=2, treatment_hierarchy=PLAINLINE_TREATMENT_HIERARCHY)
 
                 # Add formulas for lx treatment
                 add_treatment_formulas('lx_treatment_model', 'lx_treatment_override', 'lx_treatment_final')
@@ -1825,7 +2212,6 @@ class Report():
                             problem_zone_length_formula = f'=IF({problem_zone_letter}{row_num}=0,"",SUMPRODUCT((${problem_zone_group_letter}$3:${problem_zone_group_letter}${last_row}={problem_zone_group_letter}{row_num})*(${chainage_end_letter}$3:${chainage_end_letter}${last_row}-${chainage_start_letter}$3:${chainage_start_letter}${last_row})*1000))'
                             worksheet[f'{problem_zone_length_letter}{row_num}'] = problem_zone_length_formula
 
-
                 # Add priority scoring columns
                 self._add_priority_columns(worksheet, merged)
 
@@ -1843,7 +2229,56 @@ class Report():
                 logging.info(f"  Written {len(merged)} rows to sheet '{sheet_name}'")
 
         logging.info(f"Excel report saved to: {self.output_path}")
-    
+
+        self.write_tqi_html_report(output_file)
+
+    def write_tqi_html_report(self, excel_path: str):
+        """Generate a self-contained HTML TQI trend report alongside the Excel file."""
+        import json
+
+        tqi_all = self.export_data.get("agg_tqi_all")
+        if tqi_all is None or tqi_all.empty:
+            logging.warning("No TQI history data — skipping HTML report")
+            return
+
+        def _line(cid: str) -> str:
+            parts = str(cid).split("-")
+            return parts[1] if len(parts) >= 2 else "?"
+
+        df = tqi_all.copy()
+        df["collection_date"] = pd.to_datetime(df["collection_date"]).dt.strftime("%Y-%m-%d")
+        for _dc in ["step_change_date", "trend_segment_start"]:
+            if _dc in df.columns:
+                df[_dc] = df[_dc].apply(lambda x: x.strftime("%Y-%m-%d") if pd.notna(x) else None)
+        df["line_code"] = df["chainage_id"].apply(_line)
+
+        line_ids = {
+            str(lc): sorted(grp["chainage_id"].dropna().unique().tolist())
+            for lc, grp in df.groupby("line_code")
+        }
+        base_cols = ["chainage_id", "line_code", "collection_date",
+                     "tqi", "status", "trend", "trend_slope", "trend_r_squared",
+                     "step_change_type", "step_change_date", "trend_segment_start"]
+        coord_cols = [c for c in ["mid_coord_lat", "mid_coord_lng"] if c in df.columns]
+        records = (
+            df[base_cols + coord_cols]
+            .where(df.notna(), None)
+            .to_dict("records")
+        )
+
+        data_json    = json.dumps(records,  ensure_ascii=False)
+        line_id_json = json.dumps(line_ids, ensure_ascii=False)
+
+        # Re-use the same HTML template from generate_tqi_html.py
+        from rail_dog.utils.html_utils import tqi_trend_html
+        html = tqi_trend_html(data_json, line_id_json, mapbox_token=self.mapbox_token)
+
+        out_path = str(excel_path).replace(".xlsx", "_tqi_trend.html")
+        with open(out_path, "w", encoding="utf-8") as f:
+            f.write(html)
+        logging.info(f"TQI HTML report saved to: {out_path}")
+
+
 def add_merged_header_row(worksheet, col_groups: list):
     # Insert merged cells in first row
 

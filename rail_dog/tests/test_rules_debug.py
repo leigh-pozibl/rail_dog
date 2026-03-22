@@ -11,7 +11,7 @@ from dotenv import load_dotenv
 
 from rail_dog.report import RuleEngine
 from rail_dog.configs.thresholds import PLAINLINE_TREATMENT_THRESHOLDS
-from rail_dog.utils.db_utils import get_table_data
+from rail_dog.utils.db_utils import get_table_data, query_agg_tsr
 
 from snappy_utils.params import DBConnection
 
@@ -33,7 +33,7 @@ def test_rules():
     segments_df = get_table_data(engine, table_name="rail_segments")
     agg_asset_df = get_table_data(engine, table_name="agg_assets")
     agg_gbfi_df = get_table_data(engine, table_name="agg_gbfi")
-    agg_tsr_df = get_table_data(engine, table_name="agg_tsr")
+    agg_tsr_df = query_agg_tsr(engine)
     agg_tqi_df = get_table_data(engine, table_name="agg_tqi")
     agg_dtr_df = get_table_data(engine, table_name="agg_dtr")
 
